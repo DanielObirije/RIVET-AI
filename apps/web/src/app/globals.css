@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html {
+    @apply bg-neutral-950 text-neutral-100;
+  }
+
+  a,
+  button {
+    @apply transition;
+  }
+
+  a {
+    @apply text-purple-400 underline
+        decoration-purple-400/40 decoration-2
+        hover:decoration-purple-400 hover:bg-purple-500/10
+        outline-0 focus:ring-2 focus:ring-offset-1 focus:ring-offset-neutral-950 focus:ring-purple-500;
+  }
+
+  ::selection {
+    @apply bg-purple-500/40 text-purple-50;
+  }
+
+  button:focus,
+  input:focus {
+    @apply outline-0 ring-2 ring-offset-1 ring-offset-neutral-950 ring-purple-500 caret-purple-400;
+  }
+
+  label,
+  strong,
+  b {
+    @apply font-semibold;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply text-balance;
+  }
+
+  p {
+    @apply text-pretty;
+  }
+}
