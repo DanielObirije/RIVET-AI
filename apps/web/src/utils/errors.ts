@@ -32,7 +32,10 @@ export function friendlyErrorMessage(error: Error): string {
   if (
     code === "server_error" ||
     code === "unavailable" ||
-    code === "missing_config"
+    code === "missing_config" ||
+    code === "bad_request" ||
+    code === "not_found" ||
+    code === "enqueue_failed"
   ) {
     return GENERIC_MESSAGE;
   }

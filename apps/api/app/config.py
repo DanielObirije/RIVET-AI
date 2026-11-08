@@ -1,25 +1,30 @@
 import os
 from dataclasses import dataclass
+from typing import Final
 
-DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
-UPSTREAM_TIMEOUT_SECONDS = 40.0
 DEFAULT_ALLOWED_ORIGINS = "http://localhost:3000"
+DEFAULT_BROKER_URL: Final = "redis://localhost:6379/0"
+# the worker computes the same default; DATABASE_URL overrides it
+DEFAULT_DATABASE_URL: Final = "postgresql://rivet:rivet@localhost:5432/rivet"
 
 
 @dataclass(frozen=True)
 class Settings:
-    deepseek_api_key: str | None
-    deepseek_model: str
     allowed_origins: tuple[str, ...]
 
 
 def load_settings() -> Settings:
-    api_key = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
     origins = os.getenv("CORS_ALLOWED_ORIGINS") or DEFAULT_ALLOWED_ORIGINS
     return Settings(
-        deepseek_api_key=api_key or None,
-        deepseek_model=(os.getenv("DEEPSEEK_MODEL") or "").strip() or "deepseek-chat",
         allowed_origins=tuple(
             origin.strip() for origin in origins.split(",") if origin.strip()
         ),
     )
+
+
+def broker_url() -> str:
+    return (os.getenv("CELERY_BROKER_URL") or "").strip() or DEFAULT_BROKER_URL
+
+
+def database_url() -> str:
+    return (os.getenv("DATABASE_URL") or "").strip() or DEFAULT_DATABASE_URL

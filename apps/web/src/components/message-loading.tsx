@@ -53,6 +53,8 @@ const MessageLoading: React.FC = () => {
           />
         </circle>
       </svg>
+
+      <span className="text-sm text-neutral-400">Generating your reply...</span>
     </article>
   );
 };

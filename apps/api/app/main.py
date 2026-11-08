@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import load_settings
 from app.errors import ChatError
-from app.routes import chat
+from app.routes import chat, jobs
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,7 @@ app.add_middleware(
 )
 
 app.include_router(chat.router, prefix="/api")
+app.include_router(jobs.router, prefix="/api")
 
 
 @app.get("/health")

@@ -8,6 +8,8 @@ FRIENDLY_ERRORS: Final[dict[str, str]] = {
     "server_error": "Something went wrong while generating that reply. Please try again.",
     "bad_request": "That message couldn't be processed. Try rephrasing it.",
     "missing_config": "Rivet AI isn't fully set up yet. Please try again later.",
+    "not_found": "That request is no longer available.",
+    "enqueue_failed": "Rivet AI couldn't start that request. Please try again in a moment.",
 }
 
 ERROR_STATUS: Final[dict[str, int]] = {
@@ -18,6 +20,8 @@ ERROR_STATUS: Final[dict[str, int]] = {
     "server_error": 502,
     "bad_request": 400,
     "missing_config": 500,
+    "not_found": 404,
+    "enqueue_failed": 503,
 }
 
 
@@ -34,11 +38,3 @@ class ChatError(Exception):
 
     def payload(self) -> dict[str, str]:
         return {"code": self.code, "error": FRIENDLY_ERRORS[self.code]}
-
-
-def upstream_error_code(status: int) -> str:
-    if status in (402, 429):
-        return "rate_limit"
-    if status >= 500:
-        return "unavailable"
-    return "server_error"
