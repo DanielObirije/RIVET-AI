@@ -9,6 +9,7 @@ import PoweredBy from "@/components/powered-by";
 import MessageLoading from "@/components/message-loading";
 import ErrorMessage from "@/components/error-message";
 import { INITIAL_QUESTIONS } from "@/utils/const";
+import { CHAT_API_URL } from "@/utils/api";
 import { TIMEOUT_MESSAGE, friendlyErrorMessage } from "@/utils/errors";
 
 const RESPONSE_TIMEOUT_MS = 45000;
@@ -39,7 +40,7 @@ export default function Home() {
     reload,
     stop,
   } = useChat({
-    api: "/api/chat",
+    api: CHAT_API_URL,
     initialMessages: [
       {
         id: "0",

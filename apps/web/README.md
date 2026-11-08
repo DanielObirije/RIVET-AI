@@ -1,16 +1,20 @@
 # Rivet AI
 
-A general-purpose AI chat app built with Next.js and streaming responses from
-[DeepSeek](https://www.deepseek.com).
+A general-purpose AI chat app. Next.js renders the UI and streams replies from a
+FastAPI backend, which owns all AI orchestration and the DeepSeek API call.
 
 ## Features
 
-- Streaming chat responses from the DeepSeek API (`deepseek-chat` by default)
+- Streaming chat responses from the FastAPI backend (`deepseek-chat` by default)
 - Markdown rendering with code blocks
 - Conversations stay in the browser for the current session, nothing is stored
 - Responsive layout on mobile and desktop
 
 ## Getting started
+
+This app is the frontend only. The chat endpoint, validation, DeepSeek call, and
+error handling live in the FastAPI backend in `apps/api`, so start that first
+(see `apps/api/README.md`).
 
 1. Install dependencies:
 
@@ -18,19 +22,18 @@ A general-purpose AI chat app built with Next.js and streaming responses from
    npm install
    ```
 
-2. Create `.env.local` from the example and add your DeepSeek API key:
+2. Create `.env.local` from the example and point it at the backend:
 
    ```bash
    cp .env.local.example .env.local
    ```
 
    ```dotenv
-   DEEPSEEK_API_KEY=your-key-here
-   # DEEPSEEK_MODEL=deepseek-chat
+   NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
    ```
 
-   The key is only read on the server in `src/app/api/chat/route.ts`, never in
-   client code.
+   Only the backend URL is public here. The DeepSeek key belongs in
+   `apps/api/.env` and never reaches the browser.
 
 3. Run the app:
 
@@ -52,8 +55,8 @@ A general-purpose AI chat app built with Next.js and streaming responses from
 ## Project structure
 
 ```
-src/app/api/chat/route.ts   DeepSeek streaming endpoint
-src/app/page.tsx            Chat screen
-src/components/             Message bubbles, form, loading indicator, logo
-src/utils/                  Shared helpers and starter prompts
+src/app/page.tsx   Chat screen, streaming state, retry handling
+src/components/    Message bubbles, form, loading indicator, logo
+src/utils/api.ts   FastAPI base URL and chat endpoint
+src/utils/         Shared helpers, error text, starter prompts
 ```
