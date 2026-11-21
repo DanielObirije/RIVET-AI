@@ -5,7 +5,7 @@ import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
-from app.jobs import JobStore, ensure_schema
+from app.jobs import ensure_schema
 from app.main import app
 
 DEFAULT_TEST_DATABASE_URL = "postgresql://rivet:rivet@localhost:5432/rivet_test"
@@ -28,14 +28,16 @@ def empty_jobs_table(database: None) -> None:
 
 
 @pytest.fixture
-def store() -> JobStore:
-    return JobStore()
+def dsn() -> str:
+    """The connection string the job functions default to via DATABASE_URL."""
+    return TEST_DATABASE_URL
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def dispatched(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Captures published job ids; no test may build a real SQS client."""
     sent: list[str] = []
-    monkeypatch.setattr("app.jobs.enqueue_job", sent.append)
+    monkeypatch.setattr("app.jobs.publish_job", sent.append)
     return sent
 
 
@@ -45,13 +47,11 @@ def client() -> TestClient:
 
 
 @pytest.fixture
-def advance() -> Callable[..., None]:
+def advance(dsn: str) -> Callable[..., None]:
     """Stands in for the worker, the only process that moves a job onward."""
 
-    def advance_job(
-        store: JobStore, job_id: str, status: str, result: str | None = None
-    ) -> None:
-        with psycopg.connect(store.dsn) as conn:
+    def advance_job(job_id: str, status: str, result: str | None = None) -> None:
+        with psycopg.connect(dsn) as conn:
             conn.execute(
                 "UPDATE jobs SET status = %s, result = %s WHERE id = %s",
                 (status, result, job_id),

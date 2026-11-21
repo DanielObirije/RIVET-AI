@@ -1,12 +1,13 @@
 # Rivet AI API
 
 FastAPI is the HTTP edge of Rivet AI. It owns request validation, job records,
-task publishing and result retrieval. It does **not** call the AI provider.
-Every completion runs in the Celery worker in `apps/worker`.
+publishing a job id to Amazon SQS and result retrieval. It does **not** call the
+AI provider. Every completion runs in the Python SQS worker in `apps/worker`.
 
 That boundary is deliberate: the API process is short-lived and request-bound,
 while a model call is slow, can time out, and needs retries. Keeping the two
-apart lets each scale and fail on its own.
+apart lets each scale and fail on its own. Neither service imports the other:
+the contracts are the queue message and the `jobs` table.
 
 ## Request flow (implemented)
 
@@ -14,24 +15,29 @@ apart lets each scale and fail on its own.
 browser
   |  POST /api/chat  {messages: [...]}
   v
-FastAPI  validates -> inserts a `queued` row -> publishes the job id to Redis
+FastAPI  validates -> inserts a `queued` row -> sends {"job_id": "..."} to SQS
   |                                             |
   |  202 {id, status: "queued"}                 v
-  v                                        Celery worker
+  v                                    main queue  --redrive-->  DLQ
 browser polls GET /api/jobs/{id}                |
-  |                                             | DeepSeek completion
-  |                                             | writes `succeeded` + reply
+  |                                             | long poll, claim, DeepSeek
+  |                                             | write `succeeded` + reply
   +-------------------------------------------->|
 ```
 
 1. The browser posts the whole conversation to `POST /api/chat`.
 2. The API keeps only `user` and `assistant` turns (a client-side `system`
    message is replaced by the server prompt in the worker), inserts a `queued`
-   row in `jobs`, and publishes `rivet.tasks.generate_reply` with the job id.
+   row in `jobs`, and publishes one SQS message: `{"job_id": "..."}`. The
+   message carries nothing else; the conversation stays in PostgreSQL.
 3. The API returns `202` immediately with the job id. It never waits for the
    model.
-4. The browser polls `GET /api/jobs/{id}` until the row says `succeeded`
-   (`result` holds the reply) or `failed` (`code` and `error` explain it).
+4. The worker long-polls the queue, claims the row, calls DeepSeek and writes
+   the outcome. It deletes the message only after that write commits.
+5. The browser polls `GET /api/jobs/{id}` until the row says `succeeded`
+   (`result` holds the reply) or `failed` (`code` and `error` explain it). If the
+   reply never arrives, it stops after two minutes and offers Retry, which posts
+   `POST /api/jobs/{id}/retry` and polls the new job.
 
 There is exactly one AI execution path: a chat request becomes a job, and only
 the worker runs jobs. The API holds no DeepSeek key and imports no provider
@@ -41,21 +47,21 @@ client, so a direct call cannot creep back in.
 
 ```
 app/main.py             FastAPI app, CORS, JSON error handlers
-app/config.py           env-backed settings (CORS, broker, database URL)
-app/celery_client.py    dispatches tasks by name; imports no worker code
+app/config.py           env-backed settings (CORS, database URL, queue URL, region)
+app/queue.py            Boto3 SQS publisher; imports no worker code
 app/errors.py           error codes, status mapping, user-safe messages
 app/schemas.py          ChatRequest / ChatMessage / JobResponse, allowed roles
-app/jobs.py             jobs table + submit_job (the only write path)
+app/jobs.py             jobs table + submit_job / submit_retry (the write paths)
 app/routes/chat.py      POST /api/chat
 app/routes/jobs.py      POST /api/jobs, GET /api/jobs/{id}
-tests/                  route, validation and job tests
+tests/                  route, validation, job and publisher tests
 ```
 
 This app imports nothing from `apps/worker` and nothing from `apps/web`. It
-reaches the worker through two contracts only: the Celery task name
-`rivet.tasks.generate_reply` (`app/celery_client.py`) and the `jobs` table.
-The task name and the table's DDL are kept in step by hand, because the two
-services share that database. Each app is still its own deployment.
+reaches the worker through two contracts only: the SQS message body
+`{"job_id": "<id>"}` (`app/queue.py`) and the `jobs` table. The message body and
+the table's DDL are kept in step by hand with the worker's copies, because the
+two services share no package. Each app is still its own deployment.
 
 ## Setup
 
@@ -82,6 +88,11 @@ local work. There is no migration step: `app/jobs.py` runs
 so an empty database is enough. For AWS RDS, change only `DATABASE_URL` to the
 RDS endpoint with `sslmode=require`.
 
+Each process opens its own pool: `DB_POOL_MIN_SIZE` connections held open
+(default 1) and at most `DB_POOL_MAX_SIZE` (default 8). The worker reads the same
+two variables with the same defaults, so one value set sizes every instance and
+`max_connections` on RDS stays predictable as instances are added.
+
 No `DEEPSEEK_API_KEY` here. The model credential belongs to the worker only.
 
 ## Run
@@ -91,8 +102,32 @@ source .venv/bin/activate
 uvicorn app.main:app --reload --port 8000 --env-file .env
 ```
 
-Redis must be running for publishing to work; the worker must be running for a
-job to finish. See `apps/worker/README.md` for its start command.
+`--env-file .env` is what loads the file; nothing in the app reads it on its own.
+Set `SQS_QUEUE_URL` there (or export it) and have the worker running, or a chat
+submission answers `503 enqueue_failed`:
+
+```text
+# the queue the worker polls; there is no default on purpose
+SQS_QUEUE_URL=http://localhost:4566/000000000000/rivet-jobs   # LocalStack
+AWS_REGION=us-east-1
+SQS_ENDPOINT_URL=http://localhost:4566                        # LocalStack only
+```
+
+There is no AWS infrastructure yet. For local queue work, run LocalStack and
+create the queue once (dummy credentials are enough, they are never used to sign
+anything real):
+
+```bash
+docker run --rm -d -p 4566:4566 --name rivet-localstack localstack/localstack
+AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test \
+  aws --endpoint-url http://localhost:4566 --region us-east-1 \
+  sqs create-queue --queue-name rivet-jobs
+```
+
+Production uses no endpoint URL: boto3 talks to the regional SQS endpoint and
+takes credentials from the IAM role attached to the task. Nothing in this service
+asks for credentials at import time, so imports, tests and the OpenAPI docs work
+on a machine with no AWS access at all.
 
 OpenAPI docs: http://localhost:8000/docs
 
@@ -116,20 +151,38 @@ Both answer `202` with the job record. They share one implementation
 app already used, so a chat submission has one destination and one code path.
 
 ```json
-{ "id": "8f1c...", "status": "queued", "result": null, "code": null, "error": null }
+{ "id": "8f1c...", "status": "queued", "result": null, "code": null, "error": null, "retry_of": null }
 ```
 
 `GET /api/jobs/{id}` returns the same shape. `status` is `queued`, `running`,
 `succeeded` (then `result` holds the reply) or `failed` (then `code` and
-`error` explain it). An unknown id is `404` with code `not_found`.
+`error` explain it). `retry_of` is set when the job was started by a retry. An
+unknown id is `404` with code `not_found`.
+
+`POST /api/jobs/{id}/retry` starts a new job from an existing one and answers
+`202` with the new record. It copies the stored conversation, writes a fresh
+`queued` row whose `retry_of` points at the original, and publishes the new id.
+The original row is never modified. A second click while that retry is still
+`queued` or `running` returns the same retry instead of starting another one, so
+a double submit cannot run twice. Retrying is refused with `409` only when the
+original already `succeeded`; a job stuck in `queued` or `running` (for example
+because its message exhausted its SQS redeliveries and was moved to the DLQ) can
+be retried, which is how a user recovers without anyone touching the DLQ. The
+conversation comes from PostgreSQL, so this endpoint never reads a queue.
+
+The one check this endpoint cannot make today is ownership: the app has no
+authenticated user and no owner column, so any caller who knows an id can retry
+it. When authentication arrives, that check goes in `submit_retry`, inside the
+same transaction that locks the original row.
 
 Failures return `{"code", "error"}` with a curated message:
 
-| code             | status | meaning                          |
-| ---------------- | ------ | -------------------------------- |
-| `bad_request`    | 400    | unreadable or empty payload      |
-| `not_found`      | 404    | no job with that id              |
-| `enqueue_failed` | 503    | broker unreachable, job not sent |
+| code             | status | meaning                                    |
+| ---------------- | ------ | ------------------------------------------ |
+| `bad_request`    | 400    | unreadable or empty payload                |
+| `not_found`      | 404    | no job with that id                        |
+| `not_retryable`  | 409    | that job already succeeded                 |
+| `enqueue_failed` | 503    | no queue configured or SQS rejected it     |
 
 A job that fails inside the worker reports `rate_limit`, `timeout`, `network`,
 `unavailable`, `server_error` or `missing_config` on `GET /api/jobs/{id}`; the
@@ -156,7 +209,7 @@ restart drop in-flight work. `BackgroundTasks` and threads keep the work inside
 the web process: no independent scaling, no retry semantics, and a deploy kills
 the work. Both were rejected for the same reason.
 
-**Trade-off.** More moving parts: two images, a broker, and a database both
+**Trade-off.** More moving parts: two images, a queue, and a database both
 services can reach.
 
 **Reconsider if.** The workload becomes trivially fast (sub-second, no retries),
@@ -187,28 +240,60 @@ token by token.
 a future change, described in `apps/worker/README.md`, not something implemented
 here.
 
-### Redis carries the job messages
+### Amazon SQS carries the job messages
 
-**Decision.** Celery publishes and consumes through Redis (`CELERY_BROKER_URL`).
+**Decision.** The API publishes one JSON message per job to an SQS queue with
+Boto3: `{"job_id": "..."}`. The worker long-polls that queue. A second queue is
+wired as the DLQ through the main queue's redrive policy.
 
-**Why.** Redis is already the project's broker, it has no operational overhead
-locally, and Celery's protocol is built around it. The message stays small: one
-job id.
+**Why.** It is the managed queue the AWS deployment needs: no Redis to operate,
+delivery retries and a dead-letter queue handled by AWS, long polling instead of
+a tight loop, and IAM for access. Messages stay small because the conversation
+and the result live in PostgreSQL, so a redelivered message always reads current
+state rather than a stale copy.
 
-**Alternatives considered.** A database-backed queue table; Amazon SQS;
-in-process queues.
+**Alternatives considered.** Redis with Celery (the previous implementation);
+RabbitMQ; a database-backed queue table; in-process queues.
 
-**Why not.** A queue table needs polling and locking and turns the database into
-a broker. SQS is the target for the AWS deployment but is not available in the
-local setup and would add infrastructure now. In-process queues break the
-process boundary.
+**Why not.** Redis and RabbitMQ mean running and securing another service that
+AWS already offers, and Celery's retry state would sit outside the `jobs` table.
+A queue table turns the database into a broker and needs its own polling and
+locking. In-process queues break the process boundary.
 
-**Trade-off.** Redis delivery is at-least-once, so a job can be delivered twice.
-The worker handles that with a state guard (see its README).
+**Trade-off.** SQS is at-least-once, so a job can be delivered twice; the worker
+guards that with a conditional claim on `jobs`. SQS also does not update
+PostgreSQL, so a message that ends up in the DLQ leaves its row behind in
+`queued` or `running`. Nothing in either service repairs that, by design: the
+DLQ is for investigation, and the user-facing recovery is
+`POST /api/jobs/{id}/retry`, which starts a new job from the stored conversation
+without touching the dead-lettered message. Local development needs LocalStack
+(or another SQS-compatible endpoint) because there is no local default.
 
-**Reconsider if.** The services move to separate hosts on AWS, where SQS removes
-the need to operate Redis and gives a dead-letter queue for free. That is
-planned, not implemented.
+**Reconsider if.** Message volume or ordering needs outgrow a standard queue: FIFO
+queues, or a different broker, would be the next step. The submission path only
+needs a queue URL, so the API's side would not change.
+
+### A row can be committed without its message (known gap)
+
+**Decision.** `submit_job` inserts the row first and publishes second. When the
+send fails, the row is marked `failed` / `enqueue_failed` and the request answers
+`503`, so the caller never receives an id that nothing will ever run.
+
+**Why.** That is the only failure the process can observe and repair in-line, and
+it costs one UPDATE.
+
+**Known gap.** If the process dies between the INSERT commit and `send_message`,
+the row stays `queued` with no message behind it. No worker will pick it up, and
+nothing sweeps for it. The user sees a poll that never finishes and retries, which
+starts a new job.
+
+**Why not a transactional outbox now.** An outbox means an extra table plus a
+publisher process, and a sweeper means a clock and a second writer racing the
+normal path. Both are real components for a single-crash window.
+
+**Reconsider if.** Losing an accepted job becomes unacceptable. The smallest
+useful step is a one-off command that re-publishes jobs still `queued` after a
+few minutes, run by hand or from a scheduled task, not a new service.
 
 ### PostgreSQL is the only application database
 
@@ -224,14 +309,14 @@ the start means the SQL, types and locking behaviour are the ones that will run 
 RDS, with no second dialect to debug at deploy time.
 
 **Alternatives considered.** Keeping SQLite for local work and switching at
-deploy time; a second database just for jobs; Celery's result backend as the
+deploy time; a second database just for jobs; the queue's own result store as the
 source of truth.
 
 **Why not.** SQLite is a file on one host: separate services cannot share it,
 and its single-writer locking hides the concurrency problems PostgreSQL will
 expose. A second database doubles the operational surface and splits job state
-from application state. Celery's result backend would move the source of truth
-out of the `jobs` table and make status and error mapping harder.
+from application state. Keeping results in the queue would move the source of
+truth out of the `jobs` table, and SQS has no result store anyway.
 
 **Trade-off.** Local development needs a running PostgreSQL server; the database
 must exist, though its tables do not. Every request now depends on the database
@@ -244,16 +329,16 @@ and a `jobs` table stops being the right shape.
 ### Pooled connections and table creation
 
 **Decision.** Each process keeps one `psycopg` connection pool (1 to 8
-connections). Every store call checks out a connection, runs its own transaction
+connections). Every job function checks out a connection, runs its own transaction
 and returns it. The `jobs` table is created by `CREATE TABLE IF NOT EXISTS` on
 the first call in each process (`ensure_schema` in `app/jobs.py`), and the same
 DDL sits in `apps/worker/jobs.py`.
 
-**Why.** The API serves requests from FastAPI's thread pool and the worker runs
-prefork children, so a module-level shared connection would be a data race. A
-pool gives each call its own connection while amortising the handshake. Creating
-the table from code keeps setup to "the database exists": there is no migration
-command to run before the first request.
+**Why.** The API serves requests from FastAPI's thread pool and the worker
+handles messages from its own thread, so a module-level shared connection would
+be a data race. A pool gives each call its own connection while amortising the
+handshake. Creating the table from code keeps setup to "the database exists":
+there is no migration command to run before the first request.
 
 **Alternatives considered.** One connection per process behind a lock; a fresh
 connection per request without a pool; a migration tool such as Alembic.
@@ -280,8 +365,10 @@ pytest
 ```
 
 The suite drives the real routes with `TestClient` against PostgreSQL: the job
-store creates `jobs` if it is missing, `jobs` is truncated before each test, and
-the Celery publish step is stubbed, so the tests never contact Redis or DeepSeek.
+store creates `jobs` if it is missing and `jobs` is truncated before each test.
+The publish step is stubbed for every test (`tests/conftest.py`), and
+`tests/test_queue.py` checks the publisher itself against a fake SQS client, so
+no test needs an AWS credential, an AWS account or an SQS queue.
 `RIVET_TEST_DATABASE_URL` defaults to
 `postgresql://rivet:rivet@localhost:5432/rivet_test`, which must exist and must
 not be the development database. Never point it at `rivet`: the suite truncates

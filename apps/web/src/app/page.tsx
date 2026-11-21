@@ -8,7 +8,7 @@ import PoweredBy from "@/components/powered-by";
 import MessageLoading from "@/components/message-loading";
 import ErrorMessage from "@/components/error-message";
 import { INITIAL_QUESTIONS } from "@/utils/const";
-import { CHAT_API_URL, jobUrl } from "@/utils/api";
+import { CHAT_API_URL, jobUrl, retryJobUrl } from "@/utils/api";
 import { TIMEOUT_MESSAGE, friendlyErrorMessage } from "@/utils/errors";
 
 const POLL_INTERVAL_MS = 1000;
@@ -52,6 +52,8 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const requestIdRef = useRef(0);
   const failedPromptRef = useRef<string | null>(null);
+  // the job the Retry button should retry; null when no job id was ever returned
+  const failedJobIdRef = useRef<string | null>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([WELCOME]);
   const [input, setInput] = useState("");
@@ -71,6 +73,69 @@ export default function Home() {
     }
   }, [messages, chatError, busy]);
 
+  // polls one job until it finishes, fails or the poll budget runs out
+  const trackJob = useCallback(async (job: Job, requestId: number) => {
+    let current = job;
+    const deadline = Date.now() + RESPONSE_TIMEOUT_MS;
+    // if anything below fails, this is the job the Retry button acts on
+    failedJobIdRef.current = job.id;
+
+    while (requestIdRef.current === requestId) {
+      if (current.status === "succeeded") {
+        const reply: ChatMessage = {
+          id: `${current.id}-reply`,
+          role: "assistant",
+          content: current.result ?? "",
+        };
+        setMessages((messages) => [...messages, reply]);
+        failedJobIdRef.current = null;
+        return;
+      }
+      if (current.status === "failed") {
+        setChatError(jobErrorMessage(current));
+        return;
+      }
+      if (Date.now() >= deadline) {
+        setChatError(TIMEOUT_MESSAGE);
+        return;
+      }
+
+      await wait(POLL_INTERVAL_MS);
+      if (requestIdRef.current !== requestId) return;
+
+      const poll = await fetch(jobUrl(current.id));
+      if (!poll.ok) {
+        throw new Error(await poll.text());
+      }
+      current = await poll.json();
+    }
+  }, []);
+
+  const retry = useCallback(
+    async (jobId: string) => {
+      setChatError(null);
+      setBusy(true);
+      const requestId = ++requestIdRef.current;
+
+      try {
+        const response = await fetch(retryJobUrl(jobId), { method: "POST" });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        await trackJob(await response.json(), requestId);
+      } catch (error) {
+        if (requestIdRef.current === requestId) {
+          setChatError(friendlyErrorMessage(error as Error));
+        }
+      } finally {
+        if (requestIdRef.current === requestId) {
+          setBusy(false);
+        }
+      }
+    },
+    [trackJob],
+  );
+
   const send = useCallback(
     async (raw: string, options?: { appendUser?: boolean }) => {
       const prompt = raw.trim();
@@ -88,6 +153,7 @@ export default function Home() {
       setInput("");
       setChatError(null);
       failedPromptRef.current = prompt;
+      failedJobIdRef.current = null;
       setBusy(true);
 
       const requestId = ++requestIdRef.current;
@@ -104,37 +170,7 @@ export default function Home() {
           throw new Error(await response.text());
         }
 
-        let job: Job = await response.json();
-        const deadline = Date.now() + RESPONSE_TIMEOUT_MS;
-
-        while (requestIdRef.current === requestId) {
-          if (job.status === "succeeded") {
-            const reply: ChatMessage = {
-              id: `${job.id}-reply`,
-              role: "assistant",
-              content: job.result ?? "",
-            };
-            setMessages((current) => [...current, reply]);
-            return;
-          }
-          if (job.status === "failed") {
-            setChatError(jobErrorMessage(job));
-            return;
-          }
-          if (Date.now() >= deadline) {
-            setChatError(TIMEOUT_MESSAGE);
-            return;
-          }
-
-          await wait(POLL_INTERVAL_MS);
-          if (requestIdRef.current !== requestId) return;
-
-          const poll = await fetch(jobUrl(job.id));
-          if (!poll.ok) {
-            throw new Error(await poll.text());
-          }
-          job = await poll.json();
-        }
+        await trackJob(await response.json(), requestId);
       } catch (error) {
         if (requestIdRef.current === requestId) {
           setChatError(friendlyErrorMessage(error as Error));
@@ -145,7 +181,7 @@ export default function Home() {
         }
       }
     },
-    [busy, messages],
+    [busy, messages, trackJob],
   );
 
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
@@ -158,9 +194,17 @@ export default function Home() {
   };
 
   const onRetry = () => {
-    if (busy || !failedPromptRef.current) return;
+    if (busy) return;
 
+    // a job id means the request reached the API: retry it as a new job
+    if (failedJobIdRef.current) {
+      void retry(failedJobIdRef.current);
+      return;
+    }
+
+    // the request never got that far, so send the same prompt again
     const prompt = failedPromptRef.current;
+    if (!prompt) return;
     const lastMessage = messages[messages.length - 1];
     const alreadyShown =
       lastMessage?.role === "user" && lastMessage.content === prompt;

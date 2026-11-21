@@ -10,6 +10,7 @@ FRIENDLY_ERRORS: Final[dict[str, str]] = {
     "missing_config": "Rivet AI isn't fully set up yet. Please try again later.",
     "not_found": "That request is no longer available.",
     "enqueue_failed": "Rivet AI couldn't start that request. Please try again in a moment.",
+    "not_retryable": "That reply already finished, so there is nothing to retry.",
 }
 
 ERROR_STATUS: Final[dict[str, int]] = {
@@ -22,6 +23,7 @@ ERROR_STATUS: Final[dict[str, int]] = {
     "missing_config": 500,
     "not_found": 404,
     "enqueue_failed": 503,
+    "not_retryable": 409,
 }
 
 
@@ -32,9 +34,10 @@ class ChatError(Exception):
         super().__init__(code)
         self.code = code
 
-    @property
-    def status_code(self) -> int:
-        return ERROR_STATUS[self.code]
 
-    def payload(self) -> dict[str, str]:
-        return {"code": self.code, "error": FRIENDLY_ERRORS[self.code]}
+def error_status(code: str) -> int:
+    return ERROR_STATUS[code]
+
+
+def error_payload(code: str) -> dict[str, str]:
+    return {"code": code, "error": FRIENDLY_ERRORS[code]}

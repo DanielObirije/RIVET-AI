@@ -12,3 +12,8 @@ export const CHAT_API_URL = `${API_BASE_URL}/api/chat`;
 export function jobUrl(jobId: string): string {
   return `${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}`;
 }
+
+/** Creates a new job from an existing one; the original job is not modified. */
+export function retryJobUrl(jobId: string): string {
+  return `${API_BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/retry`;
+}

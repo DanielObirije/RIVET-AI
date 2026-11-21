@@ -22,3 +22,4 @@ class JobResponse(BaseModel):
     result: str | None = None
     code: str | None = None
     error: str | None = None
+    retry_of: str | None = None

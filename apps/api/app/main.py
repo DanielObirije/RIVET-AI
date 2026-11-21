@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import load_settings
-from app.errors import ChatError
+from app.errors import ChatError, error_payload, error_status
 from app.routes import chat, jobs
 
 logger = logging.getLogger(__name__)
@@ -32,18 +32,22 @@ async def health() -> dict[str, str]:
 
 @app.exception_handler(ChatError)
 async def handle_chat_error(_: Request, exc: ChatError) -> JSONResponse:
-    return JSONResponse(exc.payload(), status_code=exc.status_code)
+    return JSONResponse(error_payload(exc.code), status_code=error_status(exc.code))
 
 
 @app.exception_handler(RequestValidationError)
 async def handle_validation_error(
     _: Request, exc: RequestValidationError
 ) -> JSONResponse:
-    return JSONResponse(ChatError("bad_request").payload(), status_code=400)
+    return JSONResponse(
+        error_payload("bad_request"), status_code=error_status("bad_request")
+    )
 
 
 @app.exception_handler(Exception)
 async def handle_unexpected_error(_: Request, exc: Exception) -> JSONResponse:
     # traceback stays in the log; the client only gets a generic code
     logger.exception("Unhandled error in Rivet AI API")
-    return JSONResponse(ChatError("server_error").payload(), status_code=502)
+    return JSONResponse(
+        error_payload("server_error"), status_code=error_status("server_error")
+    )

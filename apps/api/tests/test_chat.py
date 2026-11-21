@@ -3,7 +3,7 @@ from collections.abc import Callable
 import pytest
 from fastapi.testclient import TestClient
 
-from app.jobs import JobStore
+from app.jobs import get_job
 
 
 def test_health(client: TestClient) -> None:
@@ -14,7 +14,7 @@ def test_health(client: TestClient) -> None:
 
 
 def test_chat_returns_a_queued_job_and_dispatches_it(
-    client: TestClient, store: JobStore, dispatched: list[str]
+    client: TestClient, dsn: str, dispatched: list[str]
 ) -> None:
     response = client.post(
         "/api/chat", json={"messages": [{"role": "user", "content": "Hi"}]}
@@ -26,13 +26,13 @@ def test_chat_returns_a_queued_job_and_dispatches_it(
     assert body["result"] is None
     assert dispatched == [body["id"]]
 
-    stored = store.get(body["id"])
+    stored = get_job(body["id"], dsn=dsn)
     assert stored is not None
     assert stored.messages == [("user", "Hi")]
 
 
 def test_chat_drops_client_side_system_messages(
-    client: TestClient, store: JobStore, dispatched: list[str]
+    client: TestClient, dsn: str, dispatched: list[str]
 ) -> None:
     response = client.post(
         "/api/chat",
@@ -45,7 +45,7 @@ def test_chat_drops_client_side_system_messages(
     )
 
     assert response.status_code == 202
-    job = store.get(response.json()["id"])
+    job = get_job(response.json()["id"], dsn=dsn)
     assert job is not None
     assert job.messages == [("user", "Hi")]
 
@@ -98,13 +98,13 @@ def test_chat_needs_no_model_credentials(
 
 
 def test_chat_result_comes_from_the_job(
-    client: TestClient, store: JobStore, dispatched: list[str], advance: Callable
+    client: TestClient, dsn: str, dispatched: list[str], advance: Callable
 ) -> None:
     job_id = client.post(
         "/api/chat", json={"messages": [{"role": "user", "content": "Hi"}]}
     ).json()["id"]
 
-    advance(store, job_id, "succeeded", "Hello there")
+    advance(job_id, "succeeded", "Hello there")
     body = client.get(f"/api/jobs/{job_id}").json()
 
     assert body["status"] == "succeeded"

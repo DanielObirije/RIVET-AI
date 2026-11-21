@@ -12,6 +12,9 @@ const NETWORK_MESSAGE =
 export const TIMEOUT_MESSAGE =
   "That took too long to respond. Please try again.";
 
+const ALREADY_FINISHED_MESSAGE =
+  "That reply already finished. Send a new message to ask again.";
+
 // server sends {"code","error"}; only the code is trusted for user-facing text
 function errorCode(message: string): string | undefined {
   try {
@@ -29,6 +32,7 @@ export function friendlyErrorMessage(error: Error): string {
   if (code === "rate_limit") return RATE_LIMIT_MESSAGE;
   if (code === "timeout") return TIMEOUT_MESSAGE;
   if (code === "network") return NETWORK_MESSAGE;
+  if (code === "not_retryable") return ALREADY_FINISHED_MESSAGE;
   if (
     code === "server_error" ||
     code === "unavailable" ||

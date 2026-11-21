@@ -1,8 +1,8 @@
 # Rivet AI
 
 A general-purpose AI chat app. Next.js renders the UI and talks to a FastAPI
-backend, which records each chat turn as a job. A Celery worker in `apps/worker`
-generates the reply; the browser polls the job until it is ready.
+backend, which records each chat turn as a job. A Python SQS worker in
+`apps/worker` generates the reply; the browser polls the job until it is ready.
 
 ## Features
 
@@ -15,8 +15,9 @@ generates the reply; the browser polls the job until it is ready.
 ## Getting started
 
 This app is the frontend only. The API and the worker both need to be running
-(see `apps/api/README.md` and `apps/worker/README.md`), and Redis must be up so
-the API can publish jobs.
+(see `apps/api/README.md` and `apps/worker/README.md`), and they both need an SQS
+queue to publish and poll (LocalStack is enough locally) so a chat can reach the
+worker.
 
 1. Install dependencies:
 

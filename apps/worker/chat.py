@@ -36,11 +36,11 @@ def classify_status(status: int) -> str:
 
 
 def build_payload(
-    messages: Sequence[tuple[str, str]], model: str, *, stream: bool
+    messages: Sequence[tuple[str, str]], model: str
 ) -> dict[str, object]:
     return {
         "model": model,
-        "stream": stream,
+        "stream": False,
         "temperature": 0.7,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -68,7 +68,7 @@ def complete_chat(
 ) -> str:
     """Run one non-streaming completion and return the assistant's text."""
     api_key = _require_api_key(settings)
-    payload = build_payload(messages, settings.model, stream=False)
+    payload = build_payload(messages, settings.model)
 
     try:
         with httpx.Client(
