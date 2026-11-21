@@ -1,11 +1,25 @@
 import React from "react";
 import Markdown from "markdown-to-jsx";
 import cx from "@/utils/cx";
-import { Message as MessageProps } from "ai/react";
 import RivetLogo from "@/components/rivet-logo";
-import { IconUser } from "@tabler/icons-react";
+import { IconPaperclip, IconUser } from "@tabler/icons-react";
+import { formatBytes } from "@/utils/attachments";
 
-const Message: React.FC<MessageProps> = ({ content, role }) => {
+export interface MessageAttachment {
+  filename: string;
+  size: number;
+}
+
+interface MessageProps {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+const Message: React.FC<MessageProps & { attachment?: MessageAttachment }> = ({
+  content,
+  role,
+  attachment,
+}) => {
   const isUser = role === "user";
 
   return (
@@ -18,23 +32,35 @@ const Message: React.FC<MessageProps> = ({ content, role }) => {
       )}
     >
       <Avatar isUser={isUser} />
-      <Markdown
-        className={cx(
-          "py-1.5 md:py-1 space-y-4 text-neutral-100",
-          "[&_code]:rounded [&_code]:bg-neutral-800 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:text-[0.9em] [&_code]:text-purple-200",
-          "[&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:border [&_pre]:border-neutral-800 [&_pre]:bg-neutral-950 [&_pre]:p-4 [&_pre]:text-sm",
-          "[&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-neutral-200",
-          isUser ? "font-semibold" : "",
+      <div className="min-w-0 flex-1">
+        {attachment && (
+          <div className="mb-2 inline-flex max-w-full items-center gap-2 rounded-lg border border-neutral-700 bg-neutral-900/60 px-2.5 py-1.5 text-xs text-neutral-300">
+            <IconPaperclip size={14} stroke={1.5} className="shrink-0" />
+            <span className="truncate">{attachment.filename}</span>
+            <span className="shrink-0 text-neutral-500">
+              {formatBytes(attachment.size)}
+            </span>
+          </div>
         )}
-        options={{
-          overrides: {
-            ol: ({ children }) => <ol className="list-decimal">{children}</ol>,
-            ul: ({ children }) => <ol className="list-disc">{children}</ol>,
-          },
-        }}
-      >
-        {content}
-      </Markdown>
+
+        <Markdown
+          className={cx(
+            "py-1.5 md:py-1 space-y-4 text-neutral-100",
+            "[&_code]:rounded [&_code]:bg-neutral-800 [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:text-[0.9em] [&_code]:text-purple-200",
+            "[&_pre]:overflow-x-auto [&_pre]:rounded-xl [&_pre]:border [&_pre]:border-neutral-800 [&_pre]:bg-neutral-950 [&_pre]:p-4 [&_pre]:text-sm",
+            "[&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-neutral-200",
+            isUser ? "font-semibold" : "",
+          )}
+          options={{
+            overrides: {
+              ol: ({ children }) => <ol className="list-decimal">{children}</ol>,
+              ul: ({ children }) => <ol className="list-disc">{children}</ol>,
+            },
+          }}
+        >
+          {content}
+        </Markdown>
+      </div>
     </article>
   );
 };

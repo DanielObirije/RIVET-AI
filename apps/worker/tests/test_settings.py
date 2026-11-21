@@ -141,8 +141,8 @@ def test_a_shorter_visibility_timeout_shortens_the_claim(
     assert reclaim_seconds() == 1
 
 
-def test_deepseek_settings_default_to_the_chat_model() -> None:
+def test_deepseek_settings_default_to_the_vision_model() -> None:
     settings = load_deepseek_settings()
 
     assert settings.api_key is None
-    assert settings.model == "deepseek-chat"
+    assert settings.model == "deepseek-flash"

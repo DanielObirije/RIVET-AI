@@ -189,6 +189,63 @@ A job that fails inside the worker reports `rate_limit`, `timeout`, `network`,
 API maps those to the same friendly text. Stack traces and upstream response
 bodies stay in the server log only.
 
+## Attachments
+
+One file per message: PDF, DOC, DOCX or PNG, up to `MAX_UPLOAD_SIZE_MB` (1 MB by
+default). File bytes never pass through this service.
+
+1. `POST /api/attachments` with the filename, content type and size records a
+   `pending` row and returns a 5-minute presigned PUT URL.
+2. The browser PUTs the file straight to the private bucket.
+3. `POST /api/attachments/{id}/confirm` checks that the object exists, is within
+   the limit, has the expected content type and starts with the signature for
+   its extension. It then copies the object from `uploads/pending/` to
+   `uploads/attached/` and marks the row `attached`.
+4. `POST /api/chat` or `POST /api/jobs` with `attachment_id` binds that row to
+   the job in the same transaction that inserts the job.
+5. `GET /api/attachments/{id}/url` returns a 5-minute presigned GET URL.
+
+Attachment endpoints require an `X-Client-Id` header, an opaque id the browser
+keeps in localStorage. It scopes an attachment to one browser. The app has no
+accounts, so this is ownership scoping, not authentication: a caller who knows
+both ids can still forge the header.
+
+The API sweeps `pending` rows older than `PENDING_UPLOAD_TTL_HOURS` (24) on each
+new upload and deletes their objects, at most 25 per call. The S3 lifecycle rule
+below is the backstop.
+
+Attachment failures use the same `{"code", "error"}` shape: `unsupported_file`
+(400), `file_too_large` (400), `forbidden` (403), `attachment_not_ready` (409),
+`attachment_missing` (404), `attachment_unreadable` (422, worker),
+`image_unsupported` (415, worker; only when a text-only model is configured,
+since the default `deepseek-flash` reads PNGs) and `storage_unavailable` (503).
+
+### Required S3 configuration
+
+- **Bucket:** private, Block Public Access on, no public ACLs. The app never
+  sends one. Upload and download access is presigned and short-lived.
+- **CORS:** allow the web origin to `PUT` with `Content-Type`:
+
+  ```json
+  [
+    {
+      "AllowedOrigins": ["http://localhost:3000"],
+      "AllowedMethods": ["PUT"],
+      "AllowedHeaders": ["Content-Type"],
+      "ExposeHeaders": ["ETag"],
+      "MaxAgeSeconds": 300
+    }
+  ]
+  ```
+
+- **API role:** `s3:PutObject` on `uploads/*` (the presigned PUT is signed with
+  these credentials), `s3:GetObject` on `uploads/*` (HEAD and the signature
+  read), `s3:DeleteObject` on `uploads/pending/*`, and `s3:GetObject` on the
+  copy source plus `s3:PutObject` on `uploads/attached/*` for the confirm copy.
+- **Worker role:** `s3:GetObject` on `uploads/attached/*`.
+- **Lifecycle:** expire `uploads/pending/` after 1 day. This cleans up an upload
+  whose confirm never arrived even if the API never sweeps it.
+
 ## Decisions behind this service
 
 ### FastAPI and the worker are separate services

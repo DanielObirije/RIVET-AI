@@ -14,6 +14,8 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(min_length=1, max_length=300)
+    # at most one attachment per message, enforced by there being one field
+    attachment_id: str | None = Field(default=None, max_length=64)
 
 
 class JobResponse(BaseModel):
@@ -23,3 +25,28 @@ class JobResponse(BaseModel):
     code: str | None = None
     error: str | None = None
     retry_of: str | None = None
+
+
+class AttachmentRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    content_type: str = Field(min_length=1, max_length=255)
+    size_bytes: int = Field(ge=0)
+
+
+class UploadUrlResponse(BaseModel):
+    id: str
+    upload_url: str
+    expires_in: int
+
+
+class AttachmentResponse(BaseModel):
+    id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    status: str
+
+
+class AttachmentUrlResponse(BaseModel):
+    url: str
+    expires_in: int

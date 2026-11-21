@@ -21,21 +21,51 @@ FAILED: Final = "failed"
 # runs a migration tool, so keep the two copies in step by hand
 JOBS_SCHEMA: Final = """
 CREATE TABLE IF NOT EXISTS jobs (
-    id          TEXT PRIMARY KEY,
-    status      TEXT NOT NULL,
-    messages    TEXT NOT NULL,
-    result      TEXT,
-    error_code  TEXT,
-    retry_of    TEXT,
-    attempts    INTEGER NOT NULL DEFAULT 0,
-    created_at  TIMESTAMPTZ NOT NULL,
-    updated_at  TIMESTAMPTZ NOT NULL
+    id            TEXT PRIMARY KEY,
+    status        TEXT NOT NULL,
+    messages      TEXT NOT NULL,
+    result        TEXT,
+    error_code    TEXT,
+    retry_of      TEXT,
+    attachment_id TEXT,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ NOT NULL,
+    updated_at    TIMESTAMPTZ NOT NULL
 )
 """
 
-# a table created before retry_of existed; there is no migration tool, so the
-# column is added in place, idempotently, on first use
+# same DDL as apps/api/app/jobs.py; the API writes attachments and this process
+# caches the extracted text on the row
+ATTACHMENTS_SCHEMA: Final = """
+CREATE TABLE IF NOT EXISTS attachments (
+    id             TEXT PRIMARY KEY,
+    owner_id       TEXT NOT NULL,
+    filename       TEXT NOT NULL,
+    content_type   TEXT NOT NULL,
+    size_bytes     BIGINT NOT NULL,
+    s3_key         TEXT NOT NULL,
+    status         TEXT NOT NULL,
+    extracted_text TEXT,
+    created_at     TIMESTAMPTZ NOT NULL,
+    confirmed_at   TIMESTAMPTZ
+)
+"""
+
+ATTACHMENT_INDEXES: Final = (
+    "CREATE INDEX IF NOT EXISTS attachments_owner_idx"
+    " ON attachments (owner_id)",
+    "CREATE INDEX IF NOT EXISTS attachments_status_idx"
+    " ON attachments (status, created_at)",
+)
+
+# a table created before these columns existed; there is no migration tool, so
+# each column is added in place, idempotently, on first use
 ADD_RETRY_OF: Final = "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS retry_of TEXT"
+ADD_ATTACHMENT_ID: Final = (
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS attachment_id TEXT"
+)
+
+ATTACHED: Final = "attached"
 
 # one pool per process and connection string, opened on first use so the worker
 # can start before the database is reachable
@@ -75,10 +105,17 @@ def ensure_schema(dsn: str | None = None) -> None:
         with _pool(dsn).connection() as conn:
             try:
                 conn.execute(JOBS_SCHEMA)
+                conn.execute(ATTACHMENTS_SCHEMA)
             except (errors.DuplicateTable, errors.UniqueViolation):
-                # the API created the table between our check and this DDL
+                # the API created a table between our check and this DDL;
+                # the rollback undoes ours too, so run both again
                 conn.rollback()
+                conn.execute(JOBS_SCHEMA)
+                conn.execute(ATTACHMENTS_SCHEMA)
             conn.execute(ADD_RETRY_OF)
+            conn.execute(ADD_ATTACHMENT_ID)
+            for statement in ATTACHMENT_INDEXES:
+                conn.execute(statement)
         _schema_ready.add(dsn)
 
 
@@ -94,6 +131,18 @@ class Job:
     result: str | None
     error_code: str | None
     attempts: int
+    attachment_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Attachment:
+    id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    s3_key: str
+    status: str
+    extracted_text: str | None
 
 
 def job_from_row(row: DictRow) -> Job:
@@ -105,6 +154,19 @@ def job_from_row(row: DictRow) -> Job:
         result=row["result"],
         error_code=row["error_code"],
         attempts=row["attempts"],
+        attachment_id=row["attachment_id"],
+    )
+
+
+def attachment_from_row(row: DictRow) -> Attachment:
+    return Attachment(
+        id=row["id"],
+        filename=row["filename"],
+        content_type=row["content_type"],
+        size_bytes=row["size_bytes"],
+        s3_key=row["s3_key"],
+        status=row["status"],
+        extracted_text=row["extracted_text"],
     )
 
 
@@ -126,6 +188,27 @@ def get_job(job_id: str, *, dsn: str | None = None) -> Job | None:
     with _transaction(dsn) as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = %s", (job_id,)).fetchone()
     return job_from_row(row) if row is not None else None
+
+
+def get_attachment(
+    attachment_id: str, *, dsn: str | None = None
+) -> Attachment | None:
+    with _transaction(dsn) as conn:
+        row = conn.execute(
+            "SELECT * FROM attachments WHERE id = %s", (attachment_id,)
+        ).fetchone()
+    return attachment_from_row(row) if row is not None else None
+
+
+def save_extracted_text(
+    attachment_id: str, text: str, *, dsn: str | None = None
+) -> None:
+    """Cache the extraction so a redelivery does not fetch and parse the file again."""
+    with _transaction(dsn) as conn:
+        conn.execute(
+            "UPDATE attachments SET extracted_text = %s WHERE id = %s",
+            (text, attachment_id),
+        )
 
 
 def start_job(

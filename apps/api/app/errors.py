@@ -11,6 +11,14 @@ FRIENDLY_ERRORS: Final[dict[str, str]] = {
     "not_found": "That request is no longer available.",
     "enqueue_failed": "Rivet AI couldn't start that request. Please try again in a moment.",
     "not_retryable": "That reply already finished, so there is nothing to retry.",
+    "unsupported_file": "That file type isn't supported. Attach a PDF or JPEG file.",
+    "file_too_large": "That file is too large. Please attach a smaller file.",
+    "forbidden": "That attachment isn't available for this request.",
+    "attachment_not_ready": "That upload hasn't finished yet. Try again in a moment.",
+    "attachment_missing": "That attachment is no longer available.",
+    "attachment_unreadable": "I couldn't read that file. It may be corrupt or a scanned document.",
+    "image_unsupported": "The current AI model can't read images. Attach a PDF instead.",
+    "storage_unavailable": "File storage isn't available right now. Please try again.",
 }
 
 ERROR_STATUS: Final[dict[str, int]] = {
@@ -24,6 +32,14 @@ ERROR_STATUS: Final[dict[str, int]] = {
     "not_found": 404,
     "enqueue_failed": 503,
     "not_retryable": 409,
+    "unsupported_file": 400,
+    "file_too_large": 400,
+    "forbidden": 403,
+    "attachment_not_ready": 409,
+    "attachment_missing": 404,
+    "attachment_unreadable": 422,
+    "image_unsupported": 415,
+    "storage_unavailable": 503,
 }
 
 

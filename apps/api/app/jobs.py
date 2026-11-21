@@ -28,21 +28,52 @@ FAILED: Final = "failed"
 # runs a migration tool, so keep the two copies in step by hand
 JOBS_SCHEMA: Final = """
 CREATE TABLE IF NOT EXISTS jobs (
-    id          TEXT PRIMARY KEY,
-    status      TEXT NOT NULL,
-    messages    TEXT NOT NULL,
-    result      TEXT,
-    error_code  TEXT,
-    retry_of    TEXT,
-    attempts    INTEGER NOT NULL DEFAULT 0,
-    created_at  TIMESTAMPTZ NOT NULL,
-    updated_at  TIMESTAMPTZ NOT NULL
+    id            TEXT PRIMARY KEY,
+    status        TEXT NOT NULL,
+    messages      TEXT NOT NULL,
+    result        TEXT,
+    error_code    TEXT,
+    retry_of      TEXT,
+    attachment_id TEXT,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ NOT NULL,
+    updated_at    TIMESTAMPTZ NOT NULL
 )
 """
 
-# a table created before retry_of existed; there is no migration tool, so the
-# column is added in place, idempotently, on first use
+# same DDL as apps/worker/jobs.py; the worker reads attachments and caches the
+# extracted text so a retry does not download and parse the file again
+ATTACHMENTS_SCHEMA: Final = """
+CREATE TABLE IF NOT EXISTS attachments (
+    id             TEXT PRIMARY KEY,
+    owner_id       TEXT NOT NULL,
+    filename       TEXT NOT NULL,
+    content_type   TEXT NOT NULL,
+    size_bytes     BIGINT NOT NULL,
+    s3_key         TEXT NOT NULL,
+    status         TEXT NOT NULL,
+    extracted_text TEXT,
+    created_at     TIMESTAMPTZ NOT NULL,
+    confirmed_at   TIMESTAMPTZ
+)
+"""
+
+ATTACHMENT_INDEXES: Final = (
+    "CREATE INDEX IF NOT EXISTS attachments_owner_idx"
+    " ON attachments (owner_id)",
+    "CREATE INDEX IF NOT EXISTS attachments_status_idx"
+    " ON attachments (status, created_at)",
+)
+
+# a table created before these columns existed; there is no migration tool, so
+# each column is added in place, idempotently, on first use
 ADD_RETRY_OF: Final = "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS retry_of TEXT"
+ADD_ATTACHMENT_ID: Final = (
+    "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS attachment_id TEXT"
+)
+
+PENDING: Final = "pending"
+ATTACHED: Final = "attached"
 
 # one pool per process and connection string, opened on first use so importing
 # the app never needs the database to be reachable
@@ -82,10 +113,17 @@ def ensure_schema(dsn: str | None = None) -> None:
         with _pool(dsn).connection() as conn:
             try:
                 conn.execute(JOBS_SCHEMA)
+                conn.execute(ATTACHMENTS_SCHEMA)
             except (errors.DuplicateTable, errors.UniqueViolation):
-                # the worker created the table between our check and this DDL
+                # the worker created a table between our check and this DDL;
+                # the rollback undoes ours too, so run both again
                 conn.rollback()
+                conn.execute(JOBS_SCHEMA)
+                conn.execute(ATTACHMENTS_SCHEMA)
             conn.execute(ADD_RETRY_OF)
+            conn.execute(ADD_ATTACHMENT_ID)
+            for statement in ATTACHMENT_INDEXES:
+                conn.execute(statement)
         _schema_ready.add(dsn)
 
 
@@ -101,6 +139,7 @@ class Job:
     result: str | None
     error_code: str | None
     retry_of: str | None = None
+    attachment_id: str | None = None
 
 
 def job_from_row(row: DictRow) -> Job:
@@ -112,11 +151,12 @@ def job_from_row(row: DictRow) -> Job:
         result=row["result"],
         error_code=row["error_code"],
         retry_of=row["retry_of"],
+        attachment_id=row["attachment_id"],
     )
 
 
 @contextmanager
-def _transaction(dsn: str | None) -> Iterator[Connection[DictRow]]:
+def transaction(dsn: str | None) -> Iterator[Connection[DictRow]]:
     """Check out one pooled connection and commit one transaction per call.
 
     Every caller passes its own `dsn`, so concurrent requests never share a
@@ -143,6 +183,7 @@ def insert_job(
     messages: Sequence[tuple[str, str]],
     *,
     retry_of: str | None = None,
+    attachment_id: str | None = None,
 ) -> Job:
     """Insert one `queued` row on the caller's connection."""
     job_id = uuid.uuid4().hex
@@ -151,9 +192,10 @@ def insert_job(
         [{"role": role, "content": content} for role, content in messages]
     )
     conn.execute(
-        "INSERT INTO jobs (id, status, messages, retry_of, created_at, updated_at)"
-        " VALUES (%s, %s, %s, %s, %s, %s)",
-        (job_id, QUEUED, payload, retry_of, now, now),
+        "INSERT INTO jobs"
+        " (id, status, messages, retry_of, attachment_id, created_at, updated_at)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+        (job_id, QUEUED, payload, retry_of, attachment_id, now, now),
     )
     return Job(
         id=job_id,
@@ -162,22 +204,46 @@ def insert_job(
         result=None,
         error_code=None,
         retry_of=retry_of,
+        attachment_id=attachment_id,
     )
 
 
-def create_job(messages: Sequence[tuple[str, str]], *, dsn: str | None = None) -> Job:
-    with _transaction(dsn) as conn:
-        return insert_job(conn, messages)
+def _check_attachment(
+    conn: Connection[DictRow], attachment_id: str, owner_id: str | None
+) -> None:
+    """Refuse a job whose attachment is unknown, not ready or someone else's."""
+    row = conn.execute(
+        "SELECT owner_id, status FROM attachments WHERE id = %s", (attachment_id,)
+    ).fetchone()
+    if row is None:
+        raise ChatError("not_found")
+    if owner_id is None or row["owner_id"] != owner_id:
+        raise ChatError("forbidden")
+    if row["status"] != ATTACHED:
+        raise ChatError("attachment_not_ready")
+
+
+def create_job(
+    messages: Sequence[tuple[str, str]],
+    *,
+    attachment_id: str | None = None,
+    owner_id: str | None = None,
+    dsn: str | None = None,
+) -> Job:
+    with transaction(dsn) as conn:
+        if attachment_id is not None:
+            _check_attachment(conn, attachment_id, owner_id)
+        return insert_job(conn, messages, attachment_id=attachment_id)
 
 
 def get_job(job_id: str, *, dsn: str | None = None) -> Job | None:
-    with _transaction(dsn) as conn:
+    with transaction(dsn) as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = %s", (job_id,)).fetchone()
     return job_from_row(row) if row is not None else None
 
 
 def fail_job(job_id: str, error_code: str, *, dsn: str | None = None) -> None:
-    with _transaction(dsn) as conn:
+    with transaction(dsn) as conn:
         conn.execute(
             "UPDATE jobs SET status = %s, error_code = %s, updated_at = %s"
             " WHERE id = %s",
@@ -210,7 +276,11 @@ def _publish(job: Job, *, dsn: str | None) -> JobResponse:
 
 
 def submit_job(
-    messages: Sequence[ChatMessage], *, dsn: str | None = None
+    messages: Sequence[ChatMessage],
+    *,
+    attachment_id: str | None = None,
+    owner_id: str | None = None,
+    dsn: str | None = None,
 ) -> JobResponse:
     """Validate a chat turn, record it as queued and publish it to the queue.
 
@@ -221,7 +291,10 @@ def submit_job(
     if not turns:
         raise ChatError("bad_request")
 
-    return _publish(create_job(turns, dsn=dsn), dsn=dsn)
+    job = create_job(
+        turns, attachment_id=attachment_id, owner_id=owner_id, dsn=dsn
+    )
+    return _publish(job, dsn=dsn)
 
 
 def submit_retry(job_id: str, *, dsn: str | None = None) -> JobResponse:
@@ -231,7 +304,7 @@ def submit_retry(job_id: str, *, dsn: str | None = None) -> JobResponse:
     quick succession cannot create two retries: the second one sees the first
     retry still queued or running and returns it instead of publishing again.
     """
-    with _transaction(dsn) as conn:
+    with transaction(dsn) as conn:
         row = conn.execute(
             "SELECT * FROM jobs WHERE id = %s FOR UPDATE", (job_id,)
         ).fetchone()
@@ -250,5 +323,10 @@ def submit_retry(job_id: str, *, dsn: str | None = None) -> JobResponse:
         if in_flight is not None:
             return to_response(job_from_row(in_flight))
 
-        retry = insert_job(conn, original.messages, retry_of=original.id)
+        retry = insert_job(
+            conn,
+            original.messages,
+            retry_of=original.id,
+            attachment_id=original.attachment_id,
+        )
     return _publish(retry, dsn=dsn)

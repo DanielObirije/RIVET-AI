@@ -35,17 +35,40 @@ def classify_status(status: int) -> str:
     return "server_error"
 
 
+# only the Flash line accepts image input; deepseek-chat and deepseek-v4-pro
+# are text-only, so an image must not be silently dropped
+VISION_MODELS: Final = frozenset(
+    {"deepseek-flash", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp"}
+)
+
+
+def model_supports_images(model: str) -> bool:
+    return model.strip().lower() in VISION_MODELS
+
+
 def build_payload(
-    messages: Sequence[tuple[str, str]], model: str
+    messages: Sequence[tuple[str, str]],
+    model: str,
+    *,
+    image_data_url: str | None = None,
 ) -> dict[str, object]:
+    turns = [
+        {"role": role, "content": content} for role, content in messages
+    ]
+    if image_data_url and turns and turns[-1]["role"] == "user":
+        turns[-1] = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": turns[-1]["content"]},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ],
+        }
+
     return {
         "model": model,
         "stream": False,
         "temperature": 0.7,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            *({"role": role, "content": content} for role, content in messages),
-        ],
+        "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *turns],
     }
 
 
@@ -64,11 +87,14 @@ def _require_api_key(settings: DeepSeekSettings) -> str:
 
 
 def complete_chat(
-    messages: Sequence[tuple[str, str]], settings: DeepSeekSettings
+    messages: Sequence[tuple[str, str]],
+    settings: DeepSeekSettings,
+    *,
+    image_data_url: str | None = None,
 ) -> str:
     """Run one non-streaming completion and return the assistant's text."""
     api_key = _require_api_key(settings)
-    payload = build_payload(messages, settings.model)
+    payload = build_payload(messages, settings.model, image_data_url=image_data_url)
 
     try:
         with httpx.Client(

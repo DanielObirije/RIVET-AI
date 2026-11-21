@@ -6,7 +6,6 @@ that boto3 and psycopg import.
 """
 
 import json
-import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -15,8 +14,6 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
 from settings import QueueSettings, load_queue_settings
-
-logger = logging.getLogger(__name__)
 
 # matches the body the API writes in apps/api/app/queue.py; kept in step by hand
 JOB_ID_KEY = "job_id"

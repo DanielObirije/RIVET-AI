@@ -1,5 +1,6 @@
 """Stand-ins for the boto3 clients, so no test contacts AWS."""
 
+import io
 import json
 from typing import Any, Callable
 
@@ -49,53 +50,22 @@ class FakeSqs:
 
 
 class FakeS3:
-    """An in-memory bucket with the four calls storage.py needs."""
+    """An in-memory bucket serving the one call storage.py makes."""
 
     def __init__(self) -> None:
         self.objects: dict[str, dict[str, Any]] = {}
-        self.put_calls: list[dict[str, Any]] = []
-        self.deleted: list[str] = []
-        self.presigned: list[dict[str, Any]] = []
+        self.get_calls: list[str] = []
         self.error: Exception | None = None
 
-    def put_object(self, **kwargs: Any) -> dict[str, str]:
+    def get_object(self, **kwargs: Any) -> dict[str, Any]:
         self._maybe_fail()
-        self.put_calls.append(kwargs)
-        self.objects[kwargs["Key"]] = {
-            "Body": kwargs["Body"],
-            "ContentType": kwargs.get("ContentType"),
-        }
-        return {"ETag": '"etag-1"'}
-
-    def head_object(self, **kwargs: Any) -> dict[str, Any]:
-        self._maybe_fail()
+        self.get_calls.append(kwargs["Key"])
         stored = self.objects.get(kwargs["Key"])
         if stored is None:
-            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
-        return {
-            "ContentLength": len(stored["Body"]),
-            "ContentType": stored["ContentType"],
-            "ETag": '"etag-1"',
-        }
-
-    def delete_object(self, **kwargs: Any) -> dict[str, Any]:
-        self._maybe_fail()
-        self.deleted.append(kwargs["Key"])
-        self.objects.pop(kwargs["Key"], None)
-        return {}
-
-    def generate_presigned_url(
-        self,
-        operation: str,
-        Params: dict[str, Any] | None = None,
-        ExpiresIn: int | None = None,
-    ) -> str:
-        self._maybe_fail()
-        self.presigned.append(
-            {"operation": operation, "Params": Params, "ExpiresIn": ExpiresIn}
-        )
-        params = Params or {}
-        return f"https://s3.invalid/{params.get('Bucket')}/{params.get('Key')}"
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": "Not Found"}}, "GetObject"
+            )
+        return {"Body": io.BytesIO(stored["Body"])}
 
     def _maybe_fail(self) -> None:
         if self.error is not None:

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.jobs import ensure_schema
 from app.main import app
+from fakes import FakeS3
 
 DEFAULT_TEST_DATABASE_URL = "postgresql://rivet:rivet@localhost:5432/rivet_test"
 
@@ -17,14 +18,30 @@ os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
 @pytest.fixture(scope="session", autouse=True)
 def database() -> None:
-    """Create the jobs table once per run; the DDL lives in app.jobs."""
+    """Create the tables once per run; the DDL lives in app.jobs."""
     ensure_schema(TEST_DATABASE_URL)
 
 
 @pytest.fixture(autouse=True)
 def empty_jobs_table(database: None) -> None:
     with psycopg.connect(TEST_DATABASE_URL) as conn:
-        conn.execute("TRUNCATE TABLE jobs")
+        conn.execute("TRUNCATE TABLE jobs, attachments")
+
+
+@pytest.fixture(autouse=True)
+def storage_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bucket name and no real endpoint; no test may build a real S3 client."""
+    monkeypatch.setenv("S3_BUCKET_NAME", "rivet-assets")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("MAX_UPLOAD_SIZE_MB", "1")
+    monkeypatch.delenv("S3_ENDPOINT_URL", raising=False)
+
+
+@pytest.fixture
+def fake_s3(monkeypatch: pytest.MonkeyPatch) -> FakeS3:
+    fake = FakeS3()
+    monkeypatch.setattr("app.storage.s3_client", lambda settings: fake)
+    return fake
 
 
 @pytest.fixture

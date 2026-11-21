@@ -116,3 +116,49 @@ def test_malformed_payload_is_a_server_error(
 
     assert raised.value.code == "server_error"
     assert raised.value.retryable is False
+
+
+def test_an_image_is_sent_as_a_content_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": "A chart"}}]}
+        )
+
+    use_transport(monkeypatch, handler)
+
+    chat.complete_chat(
+        [("user", "What is this?")],
+        DeepSeekSettings(api_key="test-key", model="deepseek-flash"),
+        image_data_url="data:image/jpeg;base64,AAA",
+    )
+
+    messages = captured["payload"]["messages"]
+    assert messages[1] == {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What is this?"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/jpeg;base64,AAA"},
+            },
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("model", "supported"),
+    [
+        ("deepseek-flash", True),
+        ("deepseek-v4-flash", True),
+        ("deepseek-v4-flash-vision-exp", True),
+        ("deepseek-v4-pro", False),
+        ("deepseek-chat", False),
+    ],
+)
+def test_only_the_flash_models_accept_images(model: str, supported: bool) -> None:
+    assert chat.model_supports_images(model) is supported

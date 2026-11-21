@@ -21,6 +21,10 @@ RECLAIM_MARGIN_SECONDS: Final = 5
 # limits the total across instances, so both numbers are env-overridable
 DEFAULT_POOL_MIN_SIZE: Final = 1
 DEFAULT_POOL_MAX_SIZE: Final = 8
+DEFAULT_MAX_UPLOAD_SIZE_MB: Final = 1
+# a 1 MB document can hold far more text than is useful or affordable; this
+# keeps one attachment from dominating the prompt
+DEFAULT_MAX_ATTACHMENT_TEXT_CHARS: Final = 50_000
 
 
 @dataclass(frozen=True)
@@ -43,7 +47,7 @@ class QueueSettings:
 
 @dataclass(frozen=True)
 class StorageSettings:
-    """Where assets would go. A missing bucket name only fails on first use."""
+    """Where attachments live. A missing bucket name only fails on first use."""
 
     bucket: str | None
     region: str
@@ -68,7 +72,7 @@ def load_deepseek_settings() -> DeepSeekSettings:
     api_key = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
     return DeepSeekSettings(
         api_key=api_key or None,
-        model=(os.getenv("DEEPSEEK_MODEL") or "").strip() or "deepseek-chat",
+        model=(os.getenv("DEEPSEEK_MODEL") or "").strip() or "deepseek-flash",
     )
 
 
@@ -100,6 +104,20 @@ def reclaim_seconds() -> int:
 
 def database_url() -> str:
     return (os.getenv("DATABASE_URL") or "").strip() or DEFAULT_DATABASE_URL
+
+
+def max_attachment_bytes() -> int:
+    megabytes = _int("MAX_UPLOAD_SIZE_MB", DEFAULT_MAX_UPLOAD_SIZE_MB)
+    if megabytes < 1:
+        raise ValueError("MAX_UPLOAD_SIZE_MB must be at least 1")
+    return megabytes * 1024 * 1024
+
+
+def max_attachment_text_chars() -> int:
+    chars = _int("MAX_ATTACHMENT_TEXT_CHARS", DEFAULT_MAX_ATTACHMENT_TEXT_CHARS)
+    if chars < 1:
+        raise ValueError("MAX_ATTACHMENT_TEXT_CHARS must be at least 1")
+    return chars
 
 
 def load_queue_settings() -> QueueSettings:

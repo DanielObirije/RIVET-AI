@@ -15,7 +15,7 @@ Redis anywhere in this service.
 worker.py           the process: long-poll SQS, handle messages, shut down cleanly
 processor.py        the job lifecycle: claim, run, persist, decide what to do next
 sqs_queue.py        every SQS call: receive, delete, send, visibility, parse
-storage.py          S3 upload/metadata/delete/presigned URLs (ready, not yet used)
+storage.py          the one S3 read the worker makes: download an attachment
 jobs.py             jobs table and the status transitions the worker performs
 chat.py             system prompt, request payload, completion + error mapping
 settings.py         env-backed settings (key, model, database, queue, storage)
@@ -77,8 +77,9 @@ Those dummy credentials are what LocalStack expects. On AWS, delete all of them:
 the task's IAM role supplies the credentials and `SQS_ENDPOINT_URL` stays empty.
 Nothing needs an AWS credential to import a module or run the test suite.
 
-S3 is optional. Nothing uploads an asset today, so `S3_BUCKET_NAME` can stay
-empty; `storage.py` only complains if it is used.
+S3 is only needed for attachments. With no chat that carries a file,
+`S3_BUCKET_NAME` can stay empty; the worker only complains when it has to
+download one.
 
 ## Setup
 
@@ -120,7 +121,7 @@ One poll uses the settings below, all read from the environment on each startup:
 | `SQS_WAIT_TIME_SECONDS` | 20         | long-poll wait per receive                     |
 | `SQS_VISIBILITY_TIMEOUT`| 120        | how long a received job stays invisible        |
 | `SQS_MAX_MESSAGES`      | 1          | messages per receive                           |
-| `S3_BUCKET_NAME`        | none       | assets; no bucket is created by this app       |
+| `S3_BUCKET_NAME`        | none       | attachments; no bucket is created by this app  |
 | `S3_REGION`             | `AWS_REGION` | region for the S3 client                     |
 | `S3_ENDPOINT_URL`       | none       | LocalStack only                                |
 
@@ -226,18 +227,25 @@ why the claim accepts a `running` row whose lease has expired. A job that succee
 crash is not re-run: the claim refuses it and the message is simply deleted on
 the next delivery.
 
-## S3 asset storage
+## S3 attachment storage
 
-`storage.py` gives a future image, PDF or document feature one place to upload
-bytes, read an object's metadata, delete it and hand out a presigned URL. The
-bucket name comes from `S3_BUCKET_NAME`; no bucket is created here, no ACL is
-sent (a private bucket stays private) and no credentials are read from code.
+`storage.py` owns the only S3 call the worker makes: `read_object`, a bounded
+download of an attachment an API-confirmed upload already wrote. `S3_BUCKET_NAME`
+names the bucket; no bucket is created here, no object is ever written or
+deleted here, and no credentials are read from code.
 
-Nothing in the chat flow calls it, because no asset-generation feature exists
-yet. When one does, keep the returned `StoredAsset` (bucket, key, size, content
-type, etag) in PostgreSQL next to the job rather than in memory or in the
-database as a blob. That column does not exist today: adding it now would be a
-schema change for a feature that is not built.
+`documents.py` turns PDF, DOCX and legacy DOC into plain text; a PNG is passed
+to the model as a base64 data URL only when `DEEPSEEK_MODEL` is a vision-capable
+model. `DEEPSEEK_MODEL` defaults to `deepseek-flash`, which reads images. A
+text-only model such as `deepseek-chat` or `deepseek-v4-pro` fails the job with
+`image_unsupported` instead of pretending to see the image. Extracted text is
+cached on the attachment row, so a redelivery does not download and parse the
+file again.
+
+There is no OCR. A scanned PDF has no text layer, so extraction raises
+`DocumentError` and the job fails with `attachment_unreadable`. Legacy `.doc`
+files are read through their Word 97 piece table; if that fails, the user is
+told to save the file as `.docx` or PDF. Nothing is invented for either case.
 
 ## Decisions behind this service
 
@@ -365,15 +373,16 @@ the infrastructure work has a checklist:
 - **RDS PostgreSQL 16**, reachable from both services, with security-group
   ingress from the API and worker tasks only. The connection string goes into
   `DATABASE_URL` with `sslmode=require`; nothing is hardcoded.
-- **S3 bucket** for assets: private, encryption at rest, no public access, and
-  a lifecycle rule once assets exist.
-- **IAM role for the API task**: `sqs:SendMessage` on the main queue, and read
-  access to the database secret.
+- **S3 bucket** for attachments: private, encryption at rest, no public access,
+  and a lifecycle rule that expires `uploads/pending/`.
+- **IAM role for the API task**: `sqs:SendMessage` on the main queue, the S3
+  permissions listed in `apps/api/README.md`, and read access to the database
+  secret.
 - **IAM role for the worker task**: `sqs:ReceiveMessage` and `sqs:DeleteMessage`
-  on the main queue, plus `s3:PutObject`, `GetObject`, `DeleteObject`,
-  `HeadObject` on the bucket. The worker reads no queue attributes and never
-  touches the DLQ; administrators read the DLQ through the console or their own
-  role.
+  on the main queue, plus `s3:GetObject` on `uploads/attached/*`: downloading an
+  attachment is the only S3 call this service makes. The worker reads no queue
+  attributes and never touches the DLQ; administrators read the DLQ through the
+  console or their own role.
 - **CloudWatch alarms** on both queues: `ApproximateNumberOfMessagesVisible`,
   `ApproximateNumberOfMessagesNotVisible` and `ApproximateAgeOfOldestMessage`
   for the main queue, and any message in the DLQ. These are the queue's own

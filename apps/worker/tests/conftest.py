@@ -28,7 +28,17 @@ def database() -> None:
 @pytest.fixture(autouse=True)
 def empty_jobs_table(database: None) -> None:
     with psycopg.connect(TEST_DATABASE_URL) as conn:
-        conn.execute("TRUNCATE TABLE jobs")
+        conn.execute("TRUNCATE TABLE jobs, attachments")
+
+
+@pytest.fixture(autouse=True)
+def storage_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bucket name and no real endpoint; no test may build a real S3 client."""
+    monkeypatch.setenv("S3_BUCKET_NAME", "rivet-assets")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("MAX_UPLOAD_SIZE_MB", "1")
+    monkeypatch.setenv("MAX_ATTACHMENT_TEXT_CHARS", "50000")
+    monkeypatch.delenv("S3_ENDPOINT_URL", raising=False)
 
 
 @pytest.fixture
@@ -74,8 +84,8 @@ def stub_completion(monkeypatch: pytest.MonkeyPatch) -> Callable[[Callable], lis
     def install(complete: Callable[[], str]) -> list:
         calls: list = []
 
-        def wrapper(messages, _settings):
-            calls.append(messages)
+        def wrapper(messages, _settings, **kwargs):
+            calls.append({"messages": messages, **kwargs})
             return complete()
 
         monkeypatch.setattr(processor, "complete_chat", wrapper)
@@ -89,13 +99,54 @@ def stub_completion(monkeypatch: pytest.MonkeyPatch) -> Callable[[Callable], lis
 def queue_job(dsn: str) -> Callable[..., str]:
     """Stands in for the API, the only process that creates a job row."""
 
-    def queue(job_id: str = "job-1") -> str:
+    def queue(job_id: str = "job-1", attachment_id: str | None = None) -> str:
         with psycopg.connect(dsn) as conn:
             conn.execute(
-                "INSERT INTO jobs (id, status, messages, created_at, updated_at)"
-                " VALUES (%s, 'queued', %s, now(), now())",
-                (job_id, json.dumps([{"role": "user", "content": "Hi"}])),
+                "INSERT INTO jobs"
+                " (id, status, messages, attachment_id, created_at, updated_at)"
+                " VALUES (%s, 'queued', %s, %s, now(), now())",
+                (
+                    job_id,
+                    json.dumps([{"role": "user", "content": "Hi"}]),
+                    attachment_id,
+                ),
             )
         return job_id
 
     return queue
+
+
+@pytest.fixture
+def attachment(dsn: str, fake_s3: FakeS3) -> Callable[..., str]:
+    """Stands in for the API: stores an object and its metadata row."""
+
+    def create(
+        attachment_id: str = "att-1",
+        *,
+        filename: str = "notes.pdf",
+        content_type: str = "application/pdf",
+        body: bytes = b"%PDF-1.7\nhello attachment",
+        status: str = "attached",
+        extracted_text: str | None = None,
+    ) -> str:
+        key = f"uploads/attached/{attachment_id}"
+        fake_s3.objects[key] = {"Body": body, "ContentType": content_type}
+        with psycopg.connect(dsn) as conn:
+            conn.execute(
+                "INSERT INTO attachments"
+                " (id, owner_id, filename, content_type, size_bytes, s3_key,"
+                " status, extracted_text, created_at, confirmed_at)"
+                " VALUES (%s, 'client-1', %s, %s, %s, %s, %s, %s, now(), now())",
+                (
+                    attachment_id,
+                    filename,
+                    content_type,
+                    len(body),
+                    key,
+                    status,
+                    extracted_text,
+                ),
+            )
+        return attachment_id
+
+    return create

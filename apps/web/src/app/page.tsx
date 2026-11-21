@@ -1,15 +1,27 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import Form from "@/components/form";
-import Message from "@/components/message";
+import Form, { type AttachmentDraft } from "@/components/form";
+import Message, { type MessageAttachment } from "@/components/message";
 import cx from "@/utils/cx";
 import PoweredBy from "@/components/powered-by";
 import MessageLoading from "@/components/message-loading";
 import ErrorMessage from "@/components/error-message";
 import { INITIAL_QUESTIONS } from "@/utils/const";
 import { CHAT_API_URL, jobUrl, retryJobUrl } from "@/utils/api";
-import { TIMEOUT_MESSAGE, friendlyErrorMessage } from "@/utils/errors";
+import {
+  clientId,
+  confirmUpload,
+  createUpload,
+  uploadToS3,
+  validateFile,
+  type UploadedAttachment,
+} from "@/utils/attachments";
+import {
+  TIMEOUT_MESSAGE,
+  friendlyErrorForCode,
+  friendlyErrorMessage,
+} from "@/utils/errors";
 
 const POLL_INTERVAL_MS = 1000;
 // the worker retries a failed attempt with backoff, so allow more than one try
@@ -21,6 +33,7 @@ interface ChatMessage {
   id: string;
   role: Role;
   content: string;
+  attachment?: MessageAttachment;
 }
 
 interface Job {
@@ -28,7 +41,6 @@ interface Job {
   status: string;
   result: string | null;
   code: string | null;
-  error: string | null;
 }
 
 const WELCOME: ChatMessage = {
@@ -43,9 +55,16 @@ function wait(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// the API answers a failure with {"code","error"}, which friendlyErrorMessage reads
+async function requireOk(response: Response): Promise<Response> {
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response;
+}
+
 function jobErrorMessage(job: Job): string {
-  const code = job.code ?? "server_error";
-  return friendlyErrorMessage(new Error(JSON.stringify({ code })));
+  return friendlyErrorForCode(job.code ?? "server_error");
 }
 
 export default function Home() {
@@ -59,6 +78,9 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const [attachment, setAttachment] = useState<UploadedAttachment | null>(null);
+  const [uploading, setUploading] = useState<AttachmentDraft | null>(null);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
 
   useEffect(() => {
     // ignore a poll that resolves after the screen goes away
@@ -103,10 +125,7 @@ export default function Home() {
       await wait(POLL_INTERVAL_MS);
       if (requestIdRef.current !== requestId) return;
 
-      const poll = await fetch(jobUrl(current.id));
-      if (!poll.ok) {
-        throw new Error(await poll.text());
-      }
+      const poll = await requireOk(await fetch(jobUrl(current.id)));
       current = await poll.json();
     }
   }, []);
@@ -118,10 +137,9 @@ export default function Home() {
       const requestId = ++requestIdRef.current;
 
       try {
-        const response = await fetch(retryJobUrl(jobId), { method: "POST" });
-        if (!response.ok) {
-          throw new Error(await response.text());
-        }
+        const response = await requireOk(
+          await fetch(retryJobUrl(jobId), { method: "POST" }),
+        );
         await trackJob(await response.json(), requestId);
       } catch (error) {
         if (requestIdRef.current === requestId) {
@@ -136,16 +154,58 @@ export default function Home() {
     [trackJob],
   );
 
+  const onSelectFile = useCallback(
+    async (file: File) => {
+      if (busy || uploading) return;
+
+      const problem = validateFile(file);
+      if (problem) {
+        setAttachmentError(problem);
+        return;
+      }
+
+      setAttachmentError(null);
+      setAttachment(null);
+      setUploading({ filename: file.name, size: file.size, progress: 0 });
+
+      try {
+        const { id, uploadUrl } = await createUpload(file);
+        await uploadToS3(uploadUrl, file, (progress) =>
+          setUploading({ filename: file.name, size: file.size, progress }),
+        );
+        setAttachment(await confirmUpload(id));
+      } catch (error) {
+        setAttachmentError(friendlyErrorMessage(error as Error));
+      } finally {
+        setUploading(null);
+      }
+    },
+    [busy, uploading],
+  );
+
+  const onRemoveAttachment = () => {
+    setAttachment(null);
+    setAttachmentError(null);
+  };
+
   const send = useCallback(
     async (raw: string, options?: { appendUser?: boolean }) => {
       const prompt = raw.trim();
-      if (!prompt || busy) return;
+      if (!prompt || busy || uploading) return;
 
+      const pending = attachment;
       const appendUser = options?.appendUser ?? true;
       const history = appendUser
         ? [
             ...messages,
-            { id: `${Date.now()}-user`, role: "user" as Role, content: prompt },
+            {
+              id: `${Date.now()}-user`,
+              role: "user" as Role,
+              content: prompt,
+              attachment: pending
+                ? { filename: pending.filename, size: pending.sizeBytes }
+                : undefined,
+            },
           ]
         : messages;
 
@@ -159,17 +219,22 @@ export default function Home() {
       const requestId = ++requestIdRef.current;
 
       try {
-        const response = await fetch(CHAT_API_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            messages: history.map(({ role, content }) => ({ role, content })),
+        const response = await requireOk(
+          await fetch(CHAT_API_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              ...(pending ? { "X-Client-Id": clientId() } : {}),
+            },
+            body: JSON.stringify({
+              messages: history.map(({ role, content }) => ({ role, content })),
+              ...(pending ? { attachment_id: pending.id } : {}),
+            }),
           }),
-        });
-        if (!response.ok) {
-          throw new Error(await response.text());
-        }
+        );
 
+        // the job now owns the attachment, so the composer can let it go
+        setAttachment(null);
         await trackJob(await response.json(), requestId);
       } catch (error) {
         if (requestIdRef.current === requestId) {
@@ -181,7 +246,7 @@ export default function Home() {
         }
       }
     },
-    [busy, messages, trackJob],
+    [attachment, busy, messages, trackJob, uploading],
   );
 
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
@@ -267,13 +332,31 @@ export default function Home() {
           <Form
             onSubmit={onSubmit}
             inputProps={{
-              disabled: busy,
+              disabled: busy || uploading !== null,
               value: input,
               onChange: (e) => setInput(e.target.value),
             }}
             buttonProps={{
-              disabled: busy,
+              disabled: busy || uploading !== null,
             }}
+            attachment={
+              uploading
+                ? {
+                    filename: uploading.filename,
+                    size: uploading.size,
+                    progress: uploading.progress,
+                  }
+                : attachment
+                  ? {
+                      filename: attachment.filename,
+                      size: attachment.sizeBytes,
+                      progress: null,
+                    }
+                  : null
+            }
+            attachmentError={attachmentError}
+            onSelectFile={(file) => void onSelectFile(file)}
+            onRemoveAttachment={onRemoveAttachment}
           />
 
           <PoweredBy />

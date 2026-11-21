@@ -1,4 +1,6 @@
-from fastapi import APIRouter, status
+from typing import Annotated
+
+from fastapi import APIRouter, Header, status
 
 from app.errors import ChatError
 from app.jobs import get_job, submit_job, submit_retry, to_response
@@ -8,9 +10,16 @@ router = APIRouter()
 
 
 @router.post("/jobs", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED)
-def create_job(request: ChatRequest) -> JobResponse:
+def create_job(
+    request: ChatRequest,
+    x_client_id: Annotated[str | None, Header()] = None,
+) -> JobResponse:
     """Record a queued job and publish its id to the SQS queue."""
-    return submit_job(request.messages)
+    return submit_job(
+        request.messages,
+        attachment_id=request.attachment_id,
+        owner_id=x_client_id,
+    )
 
 
 @router.get("/jobs/{job_id}", response_model=JobResponse)
