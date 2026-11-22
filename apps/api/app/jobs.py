@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Final
 
+import psycopg
 from psycopg import Connection, errors
 from psycopg.rows import DictRow, dict_row
 from psycopg_pool import ConnectionPool
@@ -125,6 +126,27 @@ def ensure_schema(dsn: str | None = None) -> None:
             for statement in ATTACHMENT_INDEXES:
                 conn.execute(statement)
         _schema_ready.add(dsn)
+
+
+# short enough that a load balancer probe fails before its own timeout
+READY_TIMEOUT_SECONDS: Final = 2
+
+
+def database_ready(dsn: str | None = None) -> bool:
+    """True when a fresh connection answers a trivial query.
+
+    Deliberately bypasses the request pool: the probe must report whether the
+    database is reachable, not whether the pool happens to have a free slot.
+    """
+    try:
+        with psycopg.connect(
+            dsn or database_url(), connect_timeout=READY_TIMEOUT_SECONDS
+        ) as conn:
+            conn.execute("SELECT 1")
+    except errors.Error as exc:
+        logger.warning("Database readiness check failed: %s", exc)
+        return False
+    return True
 
 
 def _now() -> datetime:

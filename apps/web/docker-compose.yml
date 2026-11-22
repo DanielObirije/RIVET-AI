@@ -1,0 +1,19 @@
+name: rivet-web
+
+# Local dev stack for the web app only. Deployed images do not use this file.
+# The browser calls the API directly, so this container needs no network link to
+# apps/api; API_BASE_URL just has to be reachable from the browser.
+services:
+  web:
+    build:
+      context: .
+      args:
+        # Fallbacks only: the values below are read at run time and win.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+        NEXT_PUBLIC_MAX_UPLOAD_SIZE_MB: ${NEXT_PUBLIC_MAX_UPLOAD_SIZE_MB:-1}
+    environment:
+      # Served by /config.js on every request, so no rebuild to point elsewhere.
+      API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-1}
+    ports:
+      - "3000:3000"

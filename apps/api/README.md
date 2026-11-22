@@ -136,6 +136,29 @@ with `NEXT_PUBLIC_API_BASE_URL` in `apps/web/.env.local`. If you move the web
 app or the API to another origin, add that origin to `CORS_ALLOWED_ORIGINS`
 (comma separated).
 
+## Docker
+
+This directory is the deployable unit: build the image here and run it on its
+own, with no dependency on the other two apps' images.
+
+```bash
+docker build -t rivet-api .
+docker run --rm --env-file .env -p 8000:8000 rivet-api
+```
+
+Inside the container `localhost` is the container, so point `DATABASE_URL` and
+the endpoint URLs at the host or at real AWS, not at `localhost`.
+
+For local work, `docker-compose.yml` in this directory starts this app with
+Postgres and LocalStack and creates the queue and bucket:
+
+```bash
+docker compose up -d --build
+```
+
+It publishes 5432 and 4566 as well, because the worker container and a browser
+uploading through a presigned URL have to reach them.
+
 ## Endpoints
 
 `GET /health` -> `{"status": "ok"}`

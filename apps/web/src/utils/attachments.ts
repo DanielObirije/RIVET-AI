@@ -1,11 +1,15 @@
-import {
-  ATTACHMENTS_API_URL,
-  attachmentConfirmUrl,
-} from "@/utils/api";
+import { attachmentsApiUrl, attachmentConfirmUrl } from "@/utils/api";
+import { runtimeConfig } from "@/utils/runtime-config";
 
-/** Kept in step with the API's MAX_UPLOAD_SIZE_MB. */
-const MAX_UPLOAD_MB = Number(process.env.NEXT_PUBLIC_MAX_UPLOAD_SIZE_MB) || 1;
-const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
+/** Kept in step with the API's MAX_UPLOAD_SIZE_MB, at build or run time. */
+function maxUploadBytes(): number {
+  const megabytes =
+    Number(
+      runtimeConfig().maxUploadMb ?? process.env.NEXT_PUBLIC_MAX_UPLOAD_SIZE_MB,
+    ) || 1;
+  return megabytes * 1024 * 1024;
+}
+
 export const ACCEPTED_EXTENSIONS = [".pdf", ".jpg", ".jpeg"];
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -45,8 +49,9 @@ export function validateFile(file: File): string | null {
   if (file.size <= 0) {
     return "That file is empty.";
   }
-  if (file.size > MAX_UPLOAD_BYTES) {
-    return `That file is too large. The limit is ${formatBytes(MAX_UPLOAD_BYTES)}.`;
+  const limit = maxUploadBytes();
+  if (file.size > limit) {
+    return `That file is too large. The limit is ${formatBytes(limit)}.`;
   }
   return null;
 }
@@ -75,7 +80,7 @@ async function errorFrom(response: Response): Promise<Error> {
 export async function createUpload(
   file: File,
 ): Promise<{ id: string; uploadUrl: string }> {
-  const response = await fetch(ATTACHMENTS_API_URL, {
+  const response = await fetch(attachmentsApiUrl(), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

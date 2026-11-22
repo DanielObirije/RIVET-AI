@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+import Script from "next/script";
 import "./globals.css";
 import cx from "@/utils/cx";
 
@@ -19,6 +20,14 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="scroll-smooth antialiased">
+      <head>
+        {/* runs before client code: the API URL comes from the server's env */}
+        <Script
+          id="rivet-runtime-config"
+          src="/config.js"
+          strategy="beforeInteractive"
+        />
+      </head>
       <body
         className={cx(
           inter.className,

@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import load_settings
 from app.errors import ChatError, error_payload, error_status
+from app.jobs import database_ready
 from app.routes import attachments, chat, jobs
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,21 @@ def _error_response(code: str) -> JSONResponse:
 
 @app.get("/health")
 async def health() -> dict[str, str]:
+    """Liveness only: the process is up. Says nothing about what it can reach."""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready() -> JSONResponse:
+    """Readiness: the process can serve a real request. Point the probe here.
+
+    Blocking on purpose, so FastAPI runs it in the threadpool instead of stalling
+    the event loop.
+    """
+    if not database_ready():
+        # no exception text: the log has it, the probe only needs the status
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    return JSONResponse({"status": "ok"})
 
 
 @app.exception_handler(ChatError)

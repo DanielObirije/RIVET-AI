@@ -1,0 +1,96 @@
+name: rivet-api
+
+# Local dev stack for the API only. Deployed images do not use this file: build
+# this directory's Dockerfile and run it against real Postgres, SQS and S3.
+#
+# Postgres and LocalStack publish their ports because the worker stack and the
+# browser (presigned URLs) have to reach them from outside these containers.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rivet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rivet}
+      POSTGRES_DB: ${POSTGRES_DB:-rivet}
+    ports:
+      - "5432:5432"
+    volumes:
+      - rivet-api-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Local stand-in for SQS and S3. Not used when the endpoint variables point at
+  # real AWS, but harmless to leave running.
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: sqs,s3
+      DEBUG: "0"
+    ports:
+      - "4566:4566"
+    volumes:
+      - rivet-api-localstack:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # Creates the queue and bucket once. `s3 mb` tolerates an error because it
+  # fails when the bucket already exists.
+  aws-init:
+    # same image as the service above, so no extra pull; it ships the aws CLI
+    image: localstack/localstack:3
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        aws --endpoint-url http://localstack:4566 --region us-east-1 sqs create-queue --queue-name rivet-jobs >/dev/null
+        aws --endpoint-url http://localstack:4566 --region us-east-1 s3 mb s3://rivet-attachments || true
+    environment:
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+    depends_on:
+      localstack:
+        condition: service_healthy
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rivet}:${POSTGRES_PASSWORD:-rivet}@postgres:5432/${POSTGRES_DB:-rivet}
+      DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE:-1}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-8}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      # Fixed to the LocalStack service in this file, not read from .env, so an
+      # empty or real-AWS value there cannot break the local stack. A real
+      # deployment passes its own values (see Docker in README.md).
+      # localhost.localstack.cloud resolves to 127.0.0.1 on the host, so a URL
+      # signed with this host works in the browser. extra_hosts points the same
+      # name at the host gateway from inside the container.
+      SQS_QUEUE_URL: http://localhost.localstack.cloud:4566/000000000000/rivet-jobs
+      SQS_ENDPOINT_URL: http://localhost.localstack.cloud:4566
+      S3_BUCKET_NAME: rivet-attachments
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ENDPOINT_URL: http://localhost.localstack.cloud:4566
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-1}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      PENDING_UPLOAD_TTL_HOURS: ${PENDING_UPLOAD_TTL_HOURS:-24}
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "localhost.localstack.cloud:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      aws-init:
+        condition: service_completed_successfully
+
+volumes:
+  rivet-api-pgdata:
+  rivet-api-localstack:

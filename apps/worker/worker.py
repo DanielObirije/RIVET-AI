@@ -6,9 +6,11 @@ Run it from this folder:
 """
 
 import logging
+import os
 import signal
 import sys
 import threading
+from pathlib import Path
 from typing import Any, Final
 
 from dotenv import load_dotenv
@@ -27,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 # a failed receive (SQS unreachable) must not spin the loop at full speed
 RECEIVE_ERROR_BACKOFF_SECONDS: Final = 5
+
+# the file this loop touches and the image's HEALTHCHECK stats; keep the path
+# and the age limit in worker's Dockerfile in step with this constant
+DEFAULT_HEARTBEAT_PATH: Final = "/tmp/worker-heartbeat"
 
 
 def handle_message(
@@ -65,6 +71,26 @@ def _acknowledge(
         logger.error("Could not delete message %s: %s", message.message_id, exc)
 
 
+def heartbeat_path() -> str:
+    """Where the loop proves it is still turning; the image's HEALTHCHECK reads it."""
+    return (os.getenv("WORKER_HEARTBEAT_PATH") or "").strip() or DEFAULT_HEARTBEAT_PATH
+
+
+_heartbeat_unwritable = False
+
+
+def record_heartbeat() -> None:
+    """Touch the heartbeat file. A read-only path must not stop the worker."""
+    global _heartbeat_unwritable
+    path = heartbeat_path()
+    try:
+        Path(path).touch()
+    except OSError as exc:
+        if not _heartbeat_unwritable:
+            logger.warning("Cannot write heartbeat %s: %s", path, exc)
+            _heartbeat_unwritable = True
+
+
 def run(
     stop: threading.Event,
     *,
@@ -78,16 +104,21 @@ def run(
         raise QueueUnavailable("SQS_QUEUE_URL is not configured")
 
     logger.info("Polling %s", settings.queue_url)
+    record_heartbeat()
     while not stop.is_set():
         try:
             messages = receive_messages(settings=settings, sqs=sqs)
         except QueueUnavailable as exc:
             logger.error("SQS receive failed: %s", exc)
             stop.wait(RECEIVE_ERROR_BACKOFF_SECONDS)
+            record_heartbeat()
             continue
 
+        # an idle long poll and a job in flight both count as alive
+        record_heartbeat()
         for message in messages:
             handle_message(message, settings=settings, sqs=sqs, dsn=dsn)
+            record_heartbeat()
             if stop.is_set():
                 # the rest of the batch stays unacknowledged; SQS redelivers it
                 break

@@ -178,6 +178,39 @@ def test_run_keeps_polling_after_a_receive_error(
     assert len(attempts) == 2
 
 
+def test_run_records_a_heartbeat(
+    queue_settings,
+    fake_sqs: FakeSqs,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """The HEALTHCHECK stats this file, so an idle loop must still touch it."""
+    path = tmp_path / "heartbeat"
+    monkeypatch.setenv("WORKER_HEARTBEAT_PATH", str(path))
+    stop = threading.Event()
+    fake_sqs.on_receive = stop.set
+
+    run(stop, settings=queue_settings, sqs=fake_sqs)
+
+    assert path.exists()
+
+
+def test_an_unwritable_heartbeat_does_not_stop_the_worker(
+    queue_settings,
+    fake_sqs: FakeSqs,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("WORKER_HEARTBEAT_PATH", str(tmp_path / "missing" / "beat"))
+    monkeypatch.setattr(worker, "_heartbeat_unwritable", False)
+    stop = threading.Event()
+    fake_sqs.on_receive = stop.set
+
+    run(stop, settings=queue_settings, sqs=fake_sqs)
+
+    assert len(fake_sqs.receive_calls) == 1
+
+
 def test_run_needs_a_queue_url(queue_settings, fake_sqs: FakeSqs) -> None:
     with pytest.raises(QueueUnavailable):
         run(

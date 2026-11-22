@@ -135,6 +135,27 @@ poll the job.
 
 Run the tests with `pip install -r requirements-dev.txt` then `pytest`.
 
+## Docker
+
+This directory is the deployable unit: build the image here and run it on its
+own.
+
+```bash
+docker build -t rivet-worker .
+docker run --rm --env-file .env rivet-worker
+```
+
+The worker owns no database or queue, so `docker-compose.yml` here starts only
+this container. Start the `apps/api` stack first (it publishes Postgres on 5432
+and LocalStack on 4566), then:
+
+```bash
+docker compose up -d --build
+```
+
+The container reaches both through `host.docker.internal`. `docker compose
+down` stops it; the stop grace period lets the job in hand finish.
+
 ## Running more than one worker
 
 One worker is enough today; more of them are the same process started again.

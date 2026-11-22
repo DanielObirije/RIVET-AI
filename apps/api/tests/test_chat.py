@@ -3,7 +3,7 @@ from collections.abc import Callable
 import pytest
 from fastapi.testclient import TestClient
 
-from app.jobs import get_job
+from app.jobs import database_ready, get_job
 
 
 def test_health(client: TestClient) -> None:
@@ -11,6 +11,29 @@ def test_health(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_ready_reports_a_reachable_database(client: TestClient) -> None:
+    response = client.get("/ready")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_ready_is_503_without_exposing_the_failure(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe whose database is gone must leave the load balancer, quietly."""
+    monkeypatch.setattr("app.main.database_ready", lambda: False)
+
+    response = client.get("/ready")
+
+    assert response.status_code == 503
+    assert response.json() == {"status": "unavailable"}
+
+
+def test_the_database_probe_reports_an_unreachable_server() -> None:
+    assert database_ready("postgresql://rivet:rivet@127.0.0.1:1/rivet") is False
 
 
 def test_chat_returns_a_queued_job_and_dispatches_it(

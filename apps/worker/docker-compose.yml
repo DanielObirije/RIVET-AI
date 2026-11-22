@@ -1,0 +1,34 @@
+name: rivet-worker
+
+# Local dev stack for the worker only. Deployed images do not use this file:
+# build this directory's Dockerfile and run it against real Postgres, SQS and S3.
+#
+# The worker owns no infrastructure of its own. It reads the jobs table the API
+# writes and polls the queue the API publishes to, so start apps/api's stack
+# first: that is what publishes Postgres on 5432 and LocalStack on 4566.
+# host.docker.internal is the host as seen from inside this container.
+services:
+  worker:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rivet}:${POSTGRES_PASSWORD:-rivet}@host.docker.internal:5432/${POSTGRES_DB:-rivet}
+      DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE:-1}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-8}
+      # Read here rather than from .env so a localhost endpoint in .env cannot
+      # point the container at itself.
+      SQS_QUEUE_URL: http://host.docker.internal:4566/000000000000/rivet-jobs
+      SQS_ENDPOINT_URL: http://host.docker.internal:4566
+      S3_ENDPOINT_URL: http://host.docker.internal:4566
+      S3_BUCKET_NAME: rivet-attachments
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      SQS_WAIT_TIME_SECONDS: ${SQS_WAIT_TIME_SECONDS:-20}
+      SQS_VISIBILITY_TIMEOUT: ${SQS_VISIBILITY_TIMEOUT:-120}
+      SQS_MAX_MESSAGES: ${SQS_MAX_MESSAGES:-1}
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-1}
+      MAX_ATTACHMENT_TEXT_CHARS: ${MAX_ATTACHMENT_TEXT_CHARS:-50000}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+    # SIGTERM finishes the current job before the container is killed
+    stop_grace_period: 60s

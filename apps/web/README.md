@@ -46,6 +46,19 @@ worker.
 
    Open http://localhost:3000.
 
+### Docker
+
+This directory is the deployable unit:
+
+```bash
+docker build -t rivet-web .
+docker run --rm -p 3000:3000 rivet-web
+```
+
+`NEXT_PUBLIC_*` values are inlined at build time, so pass them as build args
+(`--build-arg NEXT_PUBLIC_API_BASE_URL=...`) and rebuild to change them.
+`docker-compose.yml` here does the same with `docker compose up -d --build`.
+
 ## How a message travels
 
 1. `POST /api/chat` with `{messages: [{role, content}, ...]}`. The history is

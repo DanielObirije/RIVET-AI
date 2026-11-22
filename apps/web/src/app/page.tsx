@@ -8,7 +8,7 @@ import PoweredBy from "@/components/powered-by";
 import MessageLoading from "@/components/message-loading";
 import ErrorMessage from "@/components/error-message";
 import { INITIAL_QUESTIONS } from "@/utils/const";
-import { CHAT_API_URL, jobUrl, retryJobUrl } from "@/utils/api";
+import { chatApiUrl, jobUrl, retryJobUrl } from "@/utils/api";
 import {
   clientId,
   confirmUpload,
@@ -220,7 +220,7 @@ export default function Home() {
 
       try {
         const response = await requireOk(
-          await fetch(CHAT_API_URL, {
+          await fetch(chatApiUrl(), {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
