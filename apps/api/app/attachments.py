@@ -96,7 +96,7 @@ def attachment_from_row(row: dict[str, Any]) -> Attachment:
 
 
 def _clean_filename(filename: str) -> str:
-    name = PurePath(filename.replace("\\", "/")).name.strip()
+    name = PurePath(filename).name.strip()
     if not name or name in (".", ".."):
         raise ChatError("unsupported_file")
     return name[-FILENAME_MAX_LENGTH:]
