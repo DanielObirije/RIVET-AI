@@ -102,3 +102,112 @@ resource "aws_route_table_association" "private_rt_association" {
     subnet_id = aws_subnet.private_subnets[count.index].id
     route_table_id = aws_route_table.private_route_table
 }
+
+resource "aws_security_group" "web" {
+  name = "webpubsg"
+  description = "security group for web tier"
+  vpc_id = aws_vpc.main.id
+
+  ingress{
+    description = "HTTP"
+    from_port = 80
+    to_port = 80
+    protocol = "tcp"
+    cidr_blocks = [ "0.0.0.0/0" ]
+  }
+
+  ingress{
+    description = "SSH"
+    from_port = 22
+    to_port = 22
+    protocol = "tcp"
+    cidr_blocks = [ "0.0.0.0/0" ]
+  } 
+
+  egress {
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = [ "0.0.0.0/0" ]
+  }
+
+  tags = {
+      Name = "${var.project_name}-webpubsg"
+  }
+}
+
+resource "aws_security_group" "app" {
+  name = "apppubsg"
+  description = "security group for app tier"
+  vpc_id = aws_vpc.main.id
+
+   ingress{
+    description = "HTTP"
+    from_port = 80
+    to_port = 80
+    protocol = "tcp"
+     security_groups = [
+       aws_security_group.web
+    ]
+  }
+
+  ingress{
+    description = "SSH"
+    from_port = 22
+    to_port = 22
+    protocol = "tcp"
+    security_groups = [
+       aws_security_group.web
+    ]
+  } 
+
+   ingress {
+    description = "ICMP from Web tier"
+    from_port = -1
+    to_port   = -1
+    protocol  = "icmp"
+
+    security_groups = [
+       aws_security_group.web
+    ]
+  }
+
+egress {
+    description = "Internet through NAT"
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = [ "0.0.0.0/0" ]
+  }
+
+  tags = {
+      Name = "${var.project_name}-appprisg"
+  }
+}
+
+resource "aws_security_group" "db" {
+  name = "dbprisg"
+  description = "security group for db"
+  vpc_id =  aws_vpc.main.id
+
+  ingress {
+    description = "MySQL from Application tier"
+    from_port = 5432
+    to_port   = 5432
+    protocol  = "tcp"
+
+    security_groups = [
+        aws_security_group.app.id
+    ]
+  }
+
+ egress {
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+ }
+ tags ={
+    Name = "${var.project_name}-dbprisg"
+  }
+}
